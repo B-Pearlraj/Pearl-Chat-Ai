@@ -2023,19 +2023,19 @@ with st.sidebar:
                 """,
                 unsafe_allow_html=True,
             )
-        # --------------------------------------------------------
-        # CLEAR CURRENT CHAT
-        # --------------------------------------------------------
+    # --------------------------------------------------------
+    # CLEAR CURRENT CHAT
+    # --------------------------------------------------------
 
-        if st.button(
-            "🗑  Clear current chat",
-            key="clear_current_chat",
-            use_container_width=True,
-        ):
+    if st.button(
+        "🗑  Clear current chat",
+        key="clear_current_chat",
+        use_container_width=True,
+    ):
 
-            active_conv["messages"] = []
+        active_conv["messages"] = []
 
-            st.rerun()
+        st.rerun()
         
 # ============================================================
 # MAIN HEADER
