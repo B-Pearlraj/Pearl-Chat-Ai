@@ -1971,23 +1971,68 @@ with st.sidebar:
         )
 
 
+
     # --------------------------------------------------------
     # CONFIGURATION
     # --------------------------------------------------------
 
+    import os
+    import requests
+    import streamlit as st
+
+    BACKEND_URL = os.getenv(
+        "BACKEND_API_URL",
+        "http://127.0.0.1:8000"
+    )
+
     with st.expander("⚙️ Settings", expanded=False):
 
-        # Backend URL is automatically taken from Render
-        api_url = os.getenv(
-            "BACKEND_API_URL",
-            "http://127.0.0.1:8000"
+        st.markdown(
+            """
+            <div style="
+                padding:18px;
+                border-radius:16px;
+                background:linear-gradient(135deg,#f7f1fb,#eef7f8);
+                border:1px solid rgba(124,106,158,0.16);
+                margin-bottom:12px;
+            ">
+                <div style="
+                    font-size:18px;
+                    font-weight:700;
+                    color:#574A73;
+                    margin-bottom:6px;
+                ">
+                    ✨ Pearl AI
+                </div>
+
+                <div style="
+                    font-size:13px;
+                    color:#726C7A;
+                    line-height:1.5;
+                ">
+                    Click below to launch Pearl AI and continue your conversation.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
+
+        # Launch backend
+        st.link_button(
+            "🚀 Open Pearl AI",
+            BACKEND_URL,
+            use_container_width=True,
+        )
+
+        # ----------------------------------------------------
+        # CONNECTION STATUS
+        # ----------------------------------------------------
 
         api_connected = False
 
         try:
             response = requests.get(
-                f"{api_url}/",
+                f"{BACKEND_URL}/",
                 timeout=10,
             )
 
@@ -1995,10 +2040,6 @@ with st.sidebar:
 
         except requests.exceptions.RequestException:
             api_connected = False
-
-        # ----------------------------------------------------
-        # CONNECTION STATUS
-        # ----------------------------------------------------
 
         if api_connected:
 
@@ -2018,7 +2059,7 @@ with st.sidebar:
                 """
                 <div class="chatgpt-status disconnected">
                     <span class="status-dot"></span>
-                    <span>Backend offline</span>
+                    <span>Backend starting or offline</span>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -2113,7 +2154,7 @@ if prompt := st.chat_input("ASK Anything..."):
             try:
 
                 response = requests.get(
-                    f"{api_url}/ask_query",
+                    f"{api_connected}/ask_query",
                     params={"query": prompt},
                     timeout=120,
                 )
