@@ -1984,60 +1984,58 @@ with st.sidebar:
 
         st.rerun()
 
-   # --------------------------------------------------------
-# CONFIGURATION
-# --------------------------------------------------------
+    # --------------------------------------------------------
+    # CONFIGURATION
+    # --------------------------------------------------------
 
-import os
+    with st.expander("⚙️ Settings", expanded=False):
 
-with st.expander("⚙️ Settings", expanded=False):
-
-    # Backend URL is automatically taken from Render
-    api_url = os.getenv(
-        "BACKEND_API_URL",
-        "http://127.0.0.1:8000"
-    )
-
-    api_connected = False
-
-    try:
-        response = requests.get(
-            f"{api_url}/",
-            timeout=10,
+        # Backend URL is automatically taken from Render
+        api_url = os.getenv(
+            "BACKEND_API_URL",
+            "http://127.0.0.1:8000"
         )
 
-        api_connected = response.status_code == 200
-
-    except requests.exceptions.RequestException:
         api_connected = False
 
-    # ----------------------------------------------------
-    # CONNECTION STATUS
-    # ----------------------------------------------------
+        try:
+            response = requests.get(
+                f"{api_url}/",
+                timeout=10,
+            )
 
-    if api_connected:
+            api_connected = response.status_code == 200
 
-        st.markdown(
-            """
-            <div class="chatgpt-status connected">
-                <span class="status-dot"></span>
-                <span>Backend connected</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        except requests.exceptions.RequestException:
+            api_connected = False
 
-    else:
+        # ----------------------------------------------------
+        # CONNECTION STATUS
+        # ----------------------------------------------------
 
-        st.markdown(
-            """
-            <div class="chatgpt-status disconnected">
-                <span class="status-dot"></span>
-                <span>Backend offline</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        if api_connected:
+
+            st.markdown(
+                """
+                <div class="chatgpt-status connected">
+                    <span class="status-dot"></span>
+                    <span>Backend connected</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        else:
+
+            st.markdown(
+                """
+                <div class="chatgpt-status disconnected">
+                    <span class="status-dot"></span>
+                    <span>Backend offline</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 # ============================================================
 # MAIN HEADER
 # ============================================================
