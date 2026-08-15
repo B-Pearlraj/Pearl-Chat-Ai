@@ -1970,69 +1970,23 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
 
-
-
     # --------------------------------------------------------
     # CONFIGURATION
     # --------------------------------------------------------
 
-    import os
-    import requests
-    import streamlit as st
-
-    BACKEND_URL = os.getenv(
-        "BACKEND_API_URL",
-        "http://127.0.0.1:8000"
-    )
-
     with st.expander("⚙️ Settings", expanded=False):
 
-        st.markdown(
-            """
-            <div style="
-                padding:18px;
-                border-radius:16px;
-                background:linear-gradient(135deg,#f7f1fb,#eef7f8);
-                border:1px solid rgba(124,106,158,0.16);
-                margin-bottom:12px;
-            ">
-                <div style="
-                    font-size:18px;
-                    font-weight:700;
-                    color:#574A73;
-                    margin-bottom:6px;
-                ">
-                    ✨ Pearl AI
-                </div>
-
-                <div style="
-                    font-size:13px;
-                    color:#726C7A;
-                    line-height:1.5;
-                ">
-                    Click below to launch Pearl AI and continue your conversation.
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        # Launch backend
-        st.link_button(
-            "🚀 Open Pearl AI",
-            BACKEND_URL,
-            use_container_width=True,
-        )
-
-        # ----------------------------------------------------
-        # CONNECTION STATUS
-        # ----------------------------------------------------
+        # Render backend URL
+        api_url = os.getenv(
+            "BACKEND_API_URL",
+            "https://pearl-chat-ai-backend.onrender.com"
+        ).rstrip("/")
 
         api_connected = False
 
         try:
             response = requests.get(
-                f"{BACKEND_URL}/",
+                f"{api_url}/",
                 timeout=10,
             )
 
@@ -2040,6 +1994,10 @@ with st.sidebar:
 
         except requests.exceptions.RequestException:
             api_connected = False
+
+        # ----------------------------------------------------
+        # CONNECTION STATUS
+        # ----------------------------------------------------
 
         if api_connected:
 
@@ -2053,16 +2011,51 @@ with st.sidebar:
                 unsafe_allow_html=True,
             )
 
+            st.markdown(
+                """
+                <div class="pearl-backend-info">
+                    🟢 <b>Pearl AI is ready</b><br>
+                    <span>You can continue your conversation.</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
         else:
 
             st.markdown(
                 """
                 <div class="chatgpt-status disconnected">
                     <span class="status-dot"></span>
-                    <span>Backend starting or offline</span>
+                    <span>Backend offline</span>
                 </div>
                 """,
                 unsafe_allow_html=True,
+            )
+
+            st.markdown(
+                """
+                <div class="pearl-backend-info">
+                    🔴 <b>Pearl AI backend is sleeping</b><br>
+                    <span>Click below to wake the backend and continue chatting.</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            # ------------------------------------------------
+            # START BACKEND BUTTON
+            # ------------------------------------------------
+
+            st.link_button(
+                "🚀 Start Pearl AI",
+                api_url,
+                use_container_width=True,
+            )
+
+            st.caption(
+                "Click the button to open the Pearl AI backend. "
+                "After it wakes up, return here and refresh the page."
             )
     # --------------------------------------------------------
     # CLEAR CURRENT CHAT
@@ -2154,7 +2147,7 @@ if prompt := st.chat_input("ASK Anything..."):
             try:
 
                 response = requests.get(
-                    f"{api_connected}/ask_query",
+                    f"{api_url}/ask_query",
                     params={"query": prompt},
                     timeout=120,
                 )
