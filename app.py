@@ -1970,19 +1970,6 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
 
-    # --------------------------------------------------------
-    # CLEAR CURRENT CHAT
-    # --------------------------------------------------------
-
-    if st.button(
-        "🗑  Clear current chat",
-        key="clear_current_chat",
-        use_container_width=True,
-    ):
-
-        active_conv["messages"] = []
-
-        st.rerun()
 
     # --------------------------------------------------------
     # CONFIGURATION
@@ -2036,6 +2023,20 @@ with st.sidebar:
                 """,
                 unsafe_allow_html=True,
             )
+        # --------------------------------------------------------
+        # CLEAR CURRENT CHAT
+        # --------------------------------------------------------
+
+        if st.button(
+            "🗑  Clear current chat",
+            key="clear_current_chat",
+            use_container_width=True,
+        ):
+
+            active_conv["messages"] = []
+
+            st.rerun()
+        
 # ============================================================
 # MAIN HEADER
 # ============================================================
