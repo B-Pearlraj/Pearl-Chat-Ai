@@ -1992,7 +1992,7 @@ with st.sidebar:
 
         api_url = st.text_input(
             "Backend API URL",
-            value="http://127.0.0.1:8000",
+            value="https://pearl-chat-ai-backend.onrender.com",
             key="backend_api_url",
         )
 
