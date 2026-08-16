@@ -1893,7 +1893,7 @@ with st.sidebar:
                 <div class="chatgpt-logo-orb"></div>
             </div>
             <div class="chatgpt-brand">
-                <div class="chatgpt-brand-title"><img src="Logo-PTS.png">Pearl</div>
+                <div class="chatgpt-brand-title">Pearl</div>
                 <div class="chatgpt-brand-subtitle">AI Assistant</div>
             </div>
         </div>
