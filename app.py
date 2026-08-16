@@ -1652,70 +1652,74 @@ div[data-testid="stStatusWidget"]{
     display: flex;
     align-items: center;
     gap: 9px;
-    padding: 8px 12px;
-    border-radius: 10px;
-    font-size: 13px;
+
+    padding: 12px 15px;
+    margin-bottom: 12px;
+
+    border-radius: 13px;
+
+    font-size: 14px;
     font-weight: 600;
-    margin-bottom: 10px;
 }
 
 .pearl-status.connected {
     background: rgba(34, 197, 94, 0.08);
+    border: 1px solid rgba(34, 197, 94, 0.12);
 }
 
 .pearl-status.offline {
     background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.12);
 }
 
+
+/* STATUS DOT */
+
 .status-dot {
-    width: 8px;
-    height: 8px;
+    width: 9px;
+    height: 9px;
+
+    min-width: 9px;
+
     border-radius: 50%;
-    display: inline-block;
 }
 
 .connected .status-dot {
     background: #22c55e;
-    box-shadow: 0 0 8px rgba(34, 197, 94, 0.6);
+    box-shadow: 0 0 10px rgba(34, 197, 94, 0.7);
 }
 
 .offline .status-dot {
     background: #ef4444;
-    box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+    box-shadow: 0 0 10px rgba(239, 68, 68, 0.7);
 }
 
 
 /* =========================================================
-   BACKEND INFO CARD
+   PEARL BACKEND CARD
    ========================================================= */
 
 .pearl-backend-info {
     display: flex;
     align-items: flex-start;
-    gap: 12px;
-    padding: 14px;
-    border-radius: 14px;
-    margin-top: 8px;
-    font-size: 13px;
-    line-height: 1.5;
-}
 
-.pearl-backend-info b {
-    font-size: 14px;
-}
+    gap: 14px;
 
-.pearl-backend-info span {
-    opacity: 0.65;
+    padding: 17px;
+
+    border-radius: 16px;
+
+    margin-bottom: 5px;
 }
 
 .connected-box {
-    border: 1px solid rgba(34, 197, 94, 0.18);
-    background: rgba(34, 197, 94, 0.05);
+    background: rgba(15, 118, 110, 0.08);
+    border: 1px solid rgba(20, 184, 166, 0.25);
 }
 
 .offline-box {
-    border: 1px solid rgba(239, 68, 68, 0.18);
     background: rgba(239, 68, 68, 0.05);
+    border: 1px solid rgba(239, 68, 68, 0.20);
 }
 
 
@@ -1724,42 +1728,54 @@ div[data-testid="stStatusWidget"]{
    ========================================================= */
 
 .pearl-icon {
-    width: 32px;
-    height: 32px;
-    min-width: 32px;
+    width: 38px;
+    height: 38px;
+
+    min-width: 38px;
 
     display: flex;
     align-items: center;
     justify-content: center;
 
-    border-radius: 10px;
-
-    font-size: 17px;
-    font-weight: 600;
+    border-radius: 11px;
 
     background: rgba(255, 255, 255, 0.08);
+
+    font-size: 21px;
 }
 
 
 /* =========================================================
-   CONNECTED TEXT
+   TEXT
    ========================================================= */
 
-.ask-text {
-    display: inline-block;
-    margin-top: 4px;
+.pearl-status-content {
+    display: flex;
+    flex-direction: column;
+
+    gap: 3px;
+
+    padding-top: 1px;
+}
+
+.pearl-status-content strong {
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.pearl-status-content span {
+    font-size: 12px;
+    opacity: 0.65;
+}
+
+.pearl-status-content .ask-text {
+    margin-top: 3px;
+    opacity: 0.9;
     font-weight: 600;
-    opacity: 0.9 !important;
 }
 
-
-/* =========================================================
-   WAITING TEXT
-   ========================================================= */
-
-.wait-text {
-    display: inline-block;
-    margin-top: 4px;
+.pearl-status-content .wait-text {
+    margin-top: 3px;
     font-weight: 500;
 }
 </style>
