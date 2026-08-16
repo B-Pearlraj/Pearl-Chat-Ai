@@ -1643,6 +1643,125 @@ div[data-testid="stStatusWidget"]{
   font-weight:600;
 
 }
+
+/* =========================================================
+   PEARL AI STATUS
+   ========================================================= */
+
+.pearl-status {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 10px;
+}
+
+.pearl-status.connected {
+    background: rgba(34, 197, 94, 0.08);
+}
+
+.pearl-status.offline {
+    background: rgba(239, 68, 68, 0.08);
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.connected .status-dot {
+    background: #22c55e;
+    box-shadow: 0 0 8px rgba(34, 197, 94, 0.6);
+}
+
+.offline .status-dot {
+    background: #ef4444;
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+}
+
+
+/* =========================================================
+   BACKEND INFO CARD
+   ========================================================= */
+
+.pearl-backend-info {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 14px;
+    border-radius: 14px;
+    margin-top: 8px;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.pearl-backend-info b {
+    font-size: 14px;
+}
+
+.pearl-backend-info span {
+    opacity: 0.65;
+}
+
+.connected-box {
+    border: 1px solid rgba(34, 197, 94, 0.18);
+    background: rgba(34, 197, 94, 0.05);
+}
+
+.offline-box {
+    border: 1px solid rgba(239, 68, 68, 0.18);
+    background: rgba(239, 68, 68, 0.05);
+}
+
+
+/* =========================================================
+   PEARL ICON
+   ========================================================= */
+
+.pearl-icon {
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    border-radius: 10px;
+
+    font-size: 17px;
+    font-weight: 600;
+
+    background: rgba(255, 255, 255, 0.08);
+}
+
+
+/* =========================================================
+   CONNECTED TEXT
+   ========================================================= */
+
+.ask-text {
+    display: inline-block;
+    margin-top: 4px;
+    font-weight: 600;
+    opacity: 0.9 !important;
+}
+
+
+/* =========================================================
+   WAITING TEXT
+   ========================================================= */
+
+.wait-text {
+    display: inline-block;
+    margin-top: 4px;
+    font-weight: 500;
+}
 </style>
 """
 
