@@ -1810,7 +1810,7 @@ with st.sidebar:
         st.markdown(
             """
             <div class="chatgpt-empty-history">
-                <div class="chatgpt-empty-icon">💬</div>
+                <div class="chatgpt-empty-icon">✹</div>
                 <div>No conversations yet</div>
             </div>
             """,
@@ -1858,7 +1858,7 @@ with st.sidebar:
             with history_col:
 
                 if st.button(
-                    f"💬  {title}",
+                    f"✹  {title}",
                     key=f"open_chat_{cid}",
                     use_container_width=True,
                 ):
@@ -1957,7 +1957,7 @@ with st.sidebar:
         st.markdown(
             """
             <div class="chatgpt-capability">
-                <span>💡</span>
+                <span>🪄</span>
                 <div>
                     <b>General Consultation</b>
                     <small>Professional questions and explanations</small>
@@ -1989,27 +1989,80 @@ with st.sidebar:
 
     with st.expander("⚙️ Settings", expanded=False):
 
-        # The agent now runs in-process (imported from main.py), so
-        # there is no separate FastAPI backend to reach or wake up.
-        st.markdown(
-            """
-            <div class="chatgpt-status connected">
-                <span class="status-dot"></span>
-                <span>Pearl AI ready</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+      # --------------------------------------------------------
+      # PEARL AI CONNECTION STATUS
+      # --------------------------------------------------------
 
-        st.markdown(
-            """
-            <div class="pearl-backend-info">
-                🟢 <b>Pearl AI is ready</b><br>
-                <span>Running locally in this app — no separate backend needed.</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+      backend_connected = False
+
+      try:
+          # Your in-process agent/backend check
+          # Replace this with your actual agent initialization/check
+          if agent is not None:
+              backend_connected = True
+
+      except Exception:
+          backend_connected = False
+
+
+      # --------------------------------------------------------
+      # CONNECTED
+      # --------------------------------------------------------
+
+      if backend_connected:
+
+          st.markdown(
+              """
+              <div class="pearl-status connected">
+                  <span class="status-dot"></span>
+                  <span>Pearl AI Connected</span>
+              </div>
+
+              <div class="pearl-backend-info connected-box">
+                  <div class="pearl-icon">✹</div>
+
+                  <div>
+                      <b>Pearl AI is ready</b>
+                      <br>
+                      <span>Backend connected successfully.</span>
+                      <br>
+                      <span class="ask-text">You can start asking questions.</span>
+                  </div>
+              </div>
+              """,
+              unsafe_allow_html=True,
+          )
+
+
+      # --------------------------------------------------------
+      # OFFLINE / WAITING
+      # --------------------------------------------------------
+
+      else:
+
+          st.markdown(
+              """
+              <div class="pearl-status offline">
+                  <span class="status-dot"></span>
+                  <span>Pearl AI Offline</span>
+              </div>
+
+              <div class="pearl-backend-info offline-box">
+                  <div class="pearl-icon">⏳</div>
+
+                  <div>
+                      <b>Waiting for Pearl AI...</b>
+                      <br>
+                      <span>The backend is currently offline.</span>
+                      <br>
+                      <span class="wait-text">
+                          Please wait while Pearl AI connects.
+                      </span>
+                  </div>
+              </div>
+              """,
+              unsafe_allow_html=True,
+          )
 
     # --------------------------------------------------------
     # CLEAR CURRENT CHAT
