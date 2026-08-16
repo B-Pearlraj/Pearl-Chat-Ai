@@ -23,6 +23,18 @@ def extract_clean_text(obj):
         return ""
 
     # --------------------------------------------------------
+    # LANGCHAIN MESSAGE OBJECTS
+    #   agent.invoke(...) returns real LangChain message objects
+    #   (HumanMessage, AIMessage, ...), not plain dicts. They are
+    #   not instances of dict/list/str, so without this they fall
+    #   through to the raw str(obj) repr at the bottom. Unwrap
+    #   them via their .content attribute instead.
+    # --------------------------------------------------------
+
+    if not isinstance(obj, (str, list, dict)) and hasattr(obj, "content"):
+        return extract_clean_text(obj.content)
+
+    # --------------------------------------------------------
     # STRING
     # --------------------------------------------------------
 
