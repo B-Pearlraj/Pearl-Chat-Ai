@@ -1854,7 +1854,7 @@ with st.sidebar:
             with history_col:
 
                 if st.button(
-                    f"💬  {title}",
+                    f"✹  {title}",
                     key=f"open_chat_{cid}",
                     use_container_width=True,
                 ):
@@ -1953,7 +1953,7 @@ with st.sidebar:
         st.markdown(
             """
             <div class="chatgpt-capability">
-                <span>💡</span>
+                <span>🪄</span>
                 <div>
                     <b>General Consultation</b>
                     <small>Professional questions and explanations</small>
@@ -1979,21 +1979,51 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
 
+# --------------------------------------------------------
+# CONFIGURATION
+# --------------------------------------------------------
+
+import requests
+import streamlit as st
+
+with st.expander("⚙️ Settings", expanded=False):
+
+    # Backend URL
+    api_url = st.text_input(
+        "Backend API URL",
+        value="http://127.0.0.1:8000",
+        key="backend_url"
+    )
+
     # --------------------------------------------------------
-    # CONFIGURATION
+    # CHECK BACKEND CONNECTION
     # --------------------------------------------------------
 
-    with st.expander("⚙️ Settings", expanded=False):
+    api_connected = False
 
-        # The agent runs in-process (imported from main.py), so
-        # there is no separate server to be "asleep" or unreachable.
-        api_connected = True
+    try:
+        response = requests.get(
+            f"{api_url}/",
+            timeout=5
+        )
+
+        if response.status_code == 200:
+            api_connected = True
+
+    except requests.exceptions.RequestException:
+        api_connected = False
+
+    # --------------------------------------------------------
+    # CONNECTED
+    # --------------------------------------------------------
+
+    if api_connected:
 
         st.markdown(
             """
             <div class="chatgpt-status connected">
                 <span class="status-dot"></span>
-                <span>Agent ready (running locally)</span>
+                <span>Backend Connected</span>
             </div>
             """,
             unsafe_allow_html=True,
@@ -2001,13 +2031,42 @@ with st.sidebar:
 
         st.markdown(
             """
-            <div class="pearl-backend-info">
+            <div class="pearl-backend-info connected-box">
                 🟢 <b>Pearl AI is ready</b><br>
-                <span>You can continue your conversation.</span>
+                <span>You can start asking questions.</span>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+    # --------------------------------------------------------
+    # OFFLINE
+    # --------------------------------------------------------
+
+    else:
+
+        st.markdown(
+            """
+            <div class="chatgpt-status offline">
+                <span class="status-dot"></span>
+                <span>Backend Offline</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            """
+            <div class="pearl-backend-info offline-box">
+                🟡 <b>Please wait...</b><br>
+                <span>Pearl AI backend is currently unavailable.</span><br>
+                <span>Start the backend and try again.</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.warning("⏳ Waiting for backend connection...")
     # --------------------------------------------------------
     # CLEAR CURRENT CHAT
     # --------------------------------------------------------
