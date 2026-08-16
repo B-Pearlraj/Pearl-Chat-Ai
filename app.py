@@ -13,21 +13,9 @@ import os
 #   over HTTP, we import the deep agent straight from main.py
 #   and invoke it directly in this same Python process. No
 #   backend server needs to be started or kept awake.
-#
-#   The import itself is what does the "connecting" work
-#   (loading .env, checking API keys, building the agent), so
-#   whether it succeeds or fails tells us whether the agent is
-#   really ready — this replaces the old hardcoded True.
 # ============================================================
 
-try:
-    from main import agent
-    AGENT_READY = True
-    AGENT_INIT_ERROR = None
-except Exception as e:
-    agent = None
-    AGENT_READY = False
-    AGENT_INIT_ERROR = str(e)
+from main import agent
 
 # ============================================================
 # RECURSIVE TEXT EXTRACTION  (unchanged backend logic)
@@ -1997,62 +1985,29 @@ with st.sidebar:
 
     with st.expander("⚙️ Settings", expanded=False):
 
-        # The agent runs in-process (imported from main.py) instead
-        # of over HTTP, but it can still fail to initialize (missing
-        # API key, bad import, etc.) — AGENT_READY reflects that.
-        api_connected = AGENT_READY
+        # The agent runs in-process (imported from main.py), so
+        # there is no separate server to be "asleep" or unreachable.
+        api_connected = True
 
-        if api_connected:
+        st.markdown(
+            """
+            <div class="chatgpt-status connected">
+                <span class="status-dot"></span>
+                <span>Agent ready (running locally)</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-            st.markdown(
-                """
-                <div class="chatgpt-status connected">
-                    <span class="status-dot"></span>
-                    <span>Agent ready (running locally)</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            st.markdown(
-                """
-                <div class="pearl-backend-info">
-                    🟢 <b>Pearl AI is ready</b><br>
-                    <span>You can continue your conversation.</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        else:
-
-            st.markdown(
-                """
-                <div class="chatgpt-status disconnected">
-                    <span class="status-dot"></span>
-                    <span>Agent offline</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            st.markdown(
-                f"""
-                <div class="pearl-backend-info">
-                    🔴 <b>Pearl AI failed to start</b><br>
-                    <span>{htmllib.escape(AGENT_INIT_ERROR or "Unknown error")}</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            st.caption(
-                "This usually means an API key is missing from your .env file, "
-                "or a package failed to import. Fix it, then retry below."
-            )
-
-            if st.button("🔄 Retry", use_container_width=True):
-                st.rerun()
+        st.markdown(
+            """
+            <div class="pearl-backend-info">
+                🟢 <b>Pearl AI is ready</b><br>
+                <span>You can continue your conversation.</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     # --------------------------------------------------------
     # CLEAR CURRENT CHAT
     # --------------------------------------------------------
@@ -2132,49 +2087,41 @@ if prompt := st.chat_input("ASK Anything..."):
 
         thinking_placeholder.markdown(render_thinking_html(), unsafe_allow_html=True)
 
-        if not AGENT_READY:
+        try:
 
-            error_message = f"Pearl AI failed to start: {AGENT_INIT_ERROR or 'unknown error'}. Fix the issue and hit Retry in Settings."
+            # Each Streamlit conversation gets its own thread_id
+            # (the conversation's UUID), so separate chats in the
+            # sidebar keep separate agent memory.
+            result = agent.invoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        }
+                    ]
+                },
+                config={
+                    "configurable": {
+                        "thread_id": st.session_state.active_id,
+                    }
+                },
+            )
+
+            bot_reply = extract_clean_text(result)
+
+            if not bot_reply:
+                bot_reply = "No response could be generated for this request."
+
+            thinking_placeholder.markdown(
+                render_message_html("assistant", bot_reply), unsafe_allow_html=True
+            )
+            active_conv["messages"].append({"role": "assistant", "content": bot_reply})
+
+        except Exception as e:
+            error_message = f"An unexpected error occurred while running the agent: {str(e)}"
             thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
             active_conv["messages"].append({"role": "assistant", "content": error_message})
-
-        else:
-
-            try:
-
-                # Each Streamlit conversation gets its own thread_id
-                # (the conversation's UUID), so separate chats in the
-                # sidebar keep separate agent memory.
-                result = agent.invoke(
-                    {
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": prompt,
-                            }
-                        ]
-                    },
-                    config={
-                        "configurable": {
-                            "thread_id": st.session_state.active_id,
-                        }
-                    },
-                )
-
-                bot_reply = extract_clean_text(result)
-
-                if not bot_reply:
-                    bot_reply = "No response could be generated for this request."
-
-                thinking_placeholder.markdown(
-                    render_message_html("assistant", bot_reply), unsafe_allow_html=True
-                )
-                active_conv["messages"].append({"role": "assistant", "content": bot_reply})
-
-            except Exception as e:
-                error_message = f"An unexpected error occurred while running the agent: {str(e)}"
-                thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
-                active_conv["messages"].append({"role": "assistant", "content": error_message})
 
 st.markdown(
         """
