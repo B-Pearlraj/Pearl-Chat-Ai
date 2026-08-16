@@ -13,9 +13,21 @@ import os
 #   over HTTP, we import the deep agent straight from main.py
 #   and invoke it directly in this same Python process. No
 #   backend server needs to be started or kept awake.
+#
+#   The import itself is what does the "connecting" work
+#   (loading .env, checking API keys, building the agent), so
+#   whether it succeeds or fails tells us whether the agent is
+#   really ready — this replaces the old hardcoded True.
 # ============================================================
 
-from main import agent
+try:
+    from main import agent
+    AGENT_READY = True
+    AGENT_INIT_ERROR = None
+except Exception as e:
+    agent = None
+    AGENT_READY = False
+    AGENT_INIT_ERROR = str(e)
 
 # ============================================================
 # RECURSIVE TEXT EXTRACTION  (unchanged backend logic)
@@ -1854,7 +1866,7 @@ with st.sidebar:
             with history_col:
 
                 if st.button(
-                    f"✹  {title}",
+                    f"💬  {title}",
                     key=f"open_chat_{cid}",
                     use_container_width=True,
                 ):
@@ -1953,7 +1965,7 @@ with st.sidebar:
         st.markdown(
             """
             <div class="chatgpt-capability">
-                <span>🪄</span>
+                <span>💡</span>
                 <div>
                     <b>General Consultation</b>
                     <small>Professional questions and explanations</small>
@@ -1979,94 +1991,68 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
 
-# --------------------------------------------------------
-# CONFIGURATION
-# --------------------------------------------------------
-
-import requests
-import streamlit as st
-
-with st.expander("⚙️ Settings", expanded=False):
-
-    # Backend URL
-    api_url = st.text_input(
-        "Backend API URL",
-        value="http://127.0.0.1:8000",
-        key="backend_url"
-    )
-
     # --------------------------------------------------------
-    # CHECK BACKEND CONNECTION
+    # CONFIGURATION
     # --------------------------------------------------------
 
-    api_connected = False
+    with st.expander("⚙️ Settings", expanded=False):
 
-    try:
-        response = requests.get(
-            f"{api_url}/",
-            timeout=5
-        )
+        # The agent runs in-process (imported from main.py) instead
+        # of over HTTP, but it can still fail to initialize (missing
+        # API key, bad import, etc.) — AGENT_READY reflects that.
+        api_connected = AGENT_READY
 
-        if response.status_code == 200:
-            api_connected = True
+        if api_connected:
 
-    except requests.exceptions.RequestException:
-        api_connected = False
+            st.markdown(
+                """
+                <div class="chatgpt-status connected">
+                    <span class="status-dot"></span>
+                    <span>Agent ready (running locally)</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-    # --------------------------------------------------------
-    # CONNECTED
-    # --------------------------------------------------------
+            st.markdown(
+                """
+                <div class="pearl-backend-info">
+                    🟢 <b>Pearl AI is ready</b><br>
+                    <span>You can continue your conversation.</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-    if api_connected:
+        else:
 
-        st.markdown(
-            """
-            <div class="chatgpt-status connected">
-                <span class="status-dot"></span>
-                <span>Backend Connected</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            st.markdown(
+                """
+                <div class="chatgpt-status disconnected">
+                    <span class="status-dot"></span>
+                    <span>Agent offline</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-        st.markdown(
-            """
-            <div class="pearl-backend-info connected-box">
-                🟢 <b>Pearl AI is ready</b><br>
-                <span>You can start asking questions.</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            st.markdown(
+                f"""
+                <div class="pearl-backend-info">
+                    🔴 <b>Pearl AI failed to start</b><br>
+                    <span>{htmllib.escape(AGENT_INIT_ERROR or "Unknown error")}</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-    # --------------------------------------------------------
-    # OFFLINE
-    # --------------------------------------------------------
+            st.caption(
+                "This usually means an API key is missing from your .env file, "
+                "or a package failed to import. Fix it, then retry below."
+            )
 
-    else:
-
-        st.markdown(
-            """
-            <div class="chatgpt-status offline">
-                <span class="status-dot"></span>
-                <span>Backend Offline</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.markdown(
-            """
-            <div class="pearl-backend-info offline-box">
-                🟡 <b>Please wait...</b><br>
-                <span>Pearl AI backend is currently unavailable.</span><br>
-                <span>Start the backend and try again.</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.warning("⏳ Waiting for backend connection...")
+            if st.button("🔄 Retry", use_container_width=True):
+                st.rerun()
     # --------------------------------------------------------
     # CLEAR CURRENT CHAT
     # --------------------------------------------------------
@@ -2146,41 +2132,49 @@ if prompt := st.chat_input("ASK Anything..."):
 
         thinking_placeholder.markdown(render_thinking_html(), unsafe_allow_html=True)
 
-        try:
+        if not AGENT_READY:
 
-            # Each Streamlit conversation gets its own thread_id
-            # (the conversation's UUID), so separate chats in the
-            # sidebar keep separate agent memory.
-            result = agent.invoke(
-                {
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": prompt,
-                        }
-                    ]
-                },
-                config={
-                    "configurable": {
-                        "thread_id": st.session_state.active_id,
-                    }
-                },
-            )
-
-            bot_reply = extract_clean_text(result)
-
-            if not bot_reply:
-                bot_reply = "No response could be generated for this request."
-
-            thinking_placeholder.markdown(
-                render_message_html("assistant", bot_reply), unsafe_allow_html=True
-            )
-            active_conv["messages"].append({"role": "assistant", "content": bot_reply})
-
-        except Exception as e:
-            error_message = f"An unexpected error occurred while running the agent: {str(e)}"
+            error_message = f"Pearl AI failed to start: {AGENT_INIT_ERROR or 'unknown error'}. Fix the issue and hit Retry in Settings."
             thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
             active_conv["messages"].append({"role": "assistant", "content": error_message})
+
+        else:
+
+            try:
+
+                # Each Streamlit conversation gets its own thread_id
+                # (the conversation's UUID), so separate chats in the
+                # sidebar keep separate agent memory.
+                result = agent.invoke(
+                    {
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": prompt,
+                            }
+                        ]
+                    },
+                    config={
+                        "configurable": {
+                            "thread_id": st.session_state.active_id,
+                        }
+                    },
+                )
+
+                bot_reply = extract_clean_text(result)
+
+                if not bot_reply:
+                    bot_reply = "No response could be generated for this request."
+
+                thinking_placeholder.markdown(
+                    render_message_html("assistant", bot_reply), unsafe_allow_html=True
+                )
+                active_conv["messages"].append({"role": "assistant", "content": bot_reply})
+
+            except Exception as e:
+                error_message = f"An unexpected error occurred while running the agent: {str(e)}"
+                thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
+                active_conv["messages"].append({"role": "assistant", "content": error_message})
 
 st.markdown(
         """
