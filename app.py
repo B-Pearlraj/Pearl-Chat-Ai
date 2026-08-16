@@ -1,5 +1,4 @@
 import streamlit as st
-import requests
 import json
 import ast
 import re
@@ -7,6 +6,16 @@ import html as htmllib
 import uuid
 from datetime import datetime
 import os
+
+# ============================================================
+# AGENT (LOCAL, IN-PROCESS)
+#   Instead of calling a separately-running FastAPI server
+#   over HTTP, we import the deep agent straight from main.py
+#   and invoke it directly in this same Python process. No
+#   backend server needs to be started or kept awake.
+# ============================================================
+
+from main import agent
 
 # ============================================================
 # RECURSIVE TEXT EXTRACTION  (unchanged backend logic)
@@ -1976,87 +1985,29 @@ with st.sidebar:
 
     with st.expander("⚙️ Settings", expanded=False):
 
-        # Render backend URL
-        api_url = os.getenv(
-            "BACKEND_API_URL",
-            "https://pearl-chat-ai-backend.onrender.com"
-        ).rstrip("/")
+        # The agent runs in-process (imported from main.py), so
+        # there is no separate server to be "asleep" or unreachable.
+        api_connected = True
 
-        api_connected = False
+        st.markdown(
+            """
+            <div class="chatgpt-status connected">
+                <span class="status-dot"></span>
+                <span>Agent ready (running locally)</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        try:
-            response = requests.get(
-                f"{api_url}/",
-                timeout=10,
-            )
-
-            api_connected = response.status_code == 200
-
-        except requests.exceptions.RequestException:
-            api_connected = False
-
-        # ----------------------------------------------------
-        # CONNECTION STATUS
-        # ----------------------------------------------------
-
-        if api_connected:
-
-            st.markdown(
-                """
-                <div class="chatgpt-status connected">
-                    <span class="status-dot"></span>
-                    <span>Backend connected</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            st.markdown(
-                """
-                <div class="pearl-backend-info">
-                    🟢 <b>Pearl AI is ready</b><br>
-                    <span>You can continue your conversation.</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        else:
-
-            st.markdown(
-                """
-                <div class="chatgpt-status disconnected">
-                    <span class="status-dot"></span>
-                    <span>Backend offline</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            st.markdown(
-                """
-                <div class="pearl-backend-info">
-                    🔴 <b>Pearl AI backend is sleeping</b><br>
-                    <span>Click below to wake the backend and continue chatting.</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            # ------------------------------------------------
-            # START BACKEND BUTTON
-            # ------------------------------------------------
-
-            st.link_button(
-                "🚀 Start Pearl AI",
-                api_url,
-                use_container_width=True,
-            )
-
-            st.caption(
-                "Click the button to open the Pearl AI backend. "
-                "After it wakes up, return here and refresh the page."
-            )
+        st.markdown(
+            """
+            <div class="pearl-backend-info">
+                🟢 <b>Pearl AI is ready</b><br>
+                <span>You can continue your conversation.</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     # --------------------------------------------------------
     # CLEAR CURRENT CHAT
     # --------------------------------------------------------
@@ -2134,62 +2085,43 @@ if prompt := st.chat_input("ASK Anything..."):
 
         thinking_placeholder = st.empty()
 
-        if not api_connected:
+        thinking_placeholder.markdown(render_thinking_html(), unsafe_allow_html=True)
 
-            error_message = "Pearl is unable to reach the backend API. Please start the FastAPI server and try again."
+        try:
+
+            # Each Streamlit conversation gets its own thread_id
+            # (the conversation's UUID), so separate chats in the
+            # sidebar keep separate agent memory.
+            result = agent.invoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        }
+                    ]
+                },
+                config={
+                    "configurable": {
+                        "thread_id": st.session_state.active_id,
+                    }
+                },
+            )
+
+            bot_reply = extract_clean_text(result)
+
+            if not bot_reply:
+                bot_reply = "No response could be generated for this request."
+
+            thinking_placeholder.markdown(
+                render_message_html("assistant", bot_reply), unsafe_allow_html=True
+            )
+            active_conv["messages"].append({"role": "assistant", "content": bot_reply})
+
+        except Exception as e:
+            error_message = f"An unexpected error occurred while running the agent: {str(e)}"
             thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
             active_conv["messages"].append({"role": "assistant", "content": error_message})
-
-        else:
-
-            thinking_placeholder.markdown(render_thinking_html(), unsafe_allow_html=True)
-
-            try:
-
-                response = requests.get(
-                    f"{api_url}/ask_query",
-                    params={"query": prompt},
-                    timeout=120,
-                )
-
-                if response.status_code == 200:
-
-                    data = response.json()
-                    bot_reply = extract_clean_text(data)
-
-                    if not bot_reply:
-                        bot_reply = "No response could be generated for this request."
-
-                    thinking_placeholder.markdown(
-                        render_message_html("assistant", bot_reply), unsafe_allow_html=True
-                    )
-                    active_conv["messages"].append({"role": "assistant", "content": bot_reply})
-
-                else:
-
-                    try:
-                        error_data = response.json()
-                        error_message = f"API error {response.status_code}: {extract_clean_text(error_data)}"
-                    except Exception:
-                        error_message = f"API error: {response.status_code}"
-
-                    thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
-                    active_conv["messages"].append({"role": "assistant", "content": error_message})
-
-            except requests.exceptions.Timeout:
-                error_message = "The request exceeded the allotted time. Please try again."
-                thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
-                active_conv["messages"].append({"role": "assistant", "content": error_message})
-
-            except requests.exceptions.ConnectionError:
-                error_message = "Unable to connect to the FastAPI backend. Please confirm the server is running."
-                thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
-                active_conv["messages"].append({"role": "assistant", "content": error_message})
-
-            except Exception as e:
-                error_message = f"An unexpected error occurred: {str(e)}"
-                thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
-                active_conv["messages"].append({"role": "assistant", "content": error_message})
 
 st.markdown(
         """
