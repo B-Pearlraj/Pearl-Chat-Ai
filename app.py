@@ -1,5 +1,4 @@
 import streamlit as st
-import requests
 import json
 import ast
 import re
@@ -8,41 +7,7 @@ import uuid
 from datetime import datetime
 import os
 
-# ============================================================
-# AGENT — LOCAL FIRST, REMOTE FALLBACK
-#   Primary: import the deep agent from main.py and call it
-#   directly, in-process — no server needed, fastest path.
-#   Fallback: if the local agent can't initialize (e.g. this
-#   deployment doesn't have the API keys / packages), and a
-#   BACKEND_API_URL is configured, fall back to calling that
-#   FastAPI server over HTTP instead.
-# ============================================================
-
-try:
-    from main import agent
-    LOCAL_READY = True
-    LOCAL_INIT_ERROR = None
-except Exception as e:
-    agent = None
-    LOCAL_READY = False
-    LOCAL_INIT_ERROR = str(e)
-
-REMOTE_API_URL = os.getenv("BACKEND_API_URL", "").rstrip("/")
-REMOTE_READY = False
-
-if not LOCAL_READY and REMOTE_API_URL:
-    try:
-        _resp = requests.get(f"{REMOTE_API_URL}/", timeout=10)
-        REMOTE_READY = _resp.status_code == 200
-    except requests.exceptions.RequestException:
-        REMOTE_READY = False
-
-if LOCAL_READY:
-    AGENT_MODE = "local"
-elif REMOTE_READY:
-    AGENT_MODE = "remote"
-else:
-    AGENT_MODE = None
+from main import agent
 
 # ============================================================
 # RECURSIVE TEXT EXTRACTION  (unchanged backend logic)
@@ -2012,104 +1977,28 @@ with st.sidebar:
 
     with st.expander("⚙️ Settings", expanded=False):
 
-        api_connected = AGENT_MODE is not None
+        # The agent now runs in-process (imported from main.py), so
+        # there is no separate FastAPI backend to reach or wake up.
+        st.markdown(
+            """
+            <div class="chatgpt-status connected">
+                <span class="status-dot"></span>
+                <span>Pearl AI ready</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        if AGENT_MODE == "local":
+        st.markdown(
+            """
+            <div class="pearl-backend-info">
+                🟢 <b>Pearl AI is ready</b><br>
+                <span>Running locally in this app — no separate backend needed.</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-            st.markdown(
-                """
-                <div class="chatgpt-status connected">
-                    <span class="status-dot"></span>
-                    <span>Agent ready (running locally)</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            st.markdown(
-                """
-                <div class="pearl-backend-info">
-                    🟢 <b>Pearl AI is ready</b><br>
-                    <span>You can continue your conversation.</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        elif AGENT_MODE == "remote":
-
-            st.markdown(
-                """
-                <div class="chatgpt-status connected">
-                    <span class="status-dot"></span>
-                    <span>Backend connected (remote)</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            st.markdown(
-                """
-                <div class="pearl-backend-info">
-                    🟢 <b>Pearl AI is ready</b><br>
-                    <span>Running via the remote FastAPI backend.</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        else:
-
-            st.markdown(
-                """
-                <div class="chatgpt-status disconnected">
-                    <span class="status-dot"></span>
-                    <span>Backend offline</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            if REMOTE_API_URL:
-
-                st.markdown(
-                    """
-                    <div class="pearl-backend-info">
-                        🔴 <b>Pearl AI backend is sleeping</b><br>
-                        <span>Click below to wake the backend and continue chatting.</span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                st.link_button(
-                    "🚀 Start Pearl AI",
-                    REMOTE_API_URL,
-                    use_container_width=True,
-                )
-
-                st.caption(
-                    "Click the button to open the Pearl AI backend. "
-                    "After it wakes up, return here and refresh the page."
-                )
-
-            else:
-
-                st.markdown(
-                    f"""
-                    <div class="pearl-backend-info">
-                        🔴 <b>Pearl AI failed to start</b><br>
-                        <span>{htmllib.escape(LOCAL_INIT_ERROR or "Unknown error")}</span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                st.caption(
-                    "The local agent failed to start and no BACKEND_API_URL is "
-                    "configured for a remote fallback. Fix the local setup, or "
-                    "set BACKEND_API_URL to a running FastAPI backend."
-                )
     # --------------------------------------------------------
     # CLEAR CURRENT CHAT
     # --------------------------------------------------------
@@ -2189,96 +2078,40 @@ if prompt := st.chat_input("ASK Anything..."):
 
         thinking_placeholder.markdown(render_thinking_html(), unsafe_allow_html=True)
 
-        if AGENT_MODE == "local":
+        try:
 
-            try:
-
-                # Each Streamlit conversation gets its own thread_id
-                # (the conversation's UUID), so separate chats in the
-                # sidebar keep separate agent memory.
-                result = agent.invoke(
-                    {
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": prompt,
-                            }
-                        ]
-                    },
-                    config={
-                        "configurable": {
-                            "thread_id": st.session_state.active_id,
+            # Run the deep agent directly, in-process — no FastAPI
+            # server involved. Each conversation keeps its own
+            # thread_id (its UUID) so separate chats keep separate
+            # agent memory instead of sharing one hardcoded thread.
+            result = agent.invoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": prompt,
                         }
-                    },
-                )
+                    ]
+                },
+                config={
+                    "configurable": {
+                        "thread_id": st.session_state.active_id,
+                    }
+                },
+            )
 
-                bot_reply = extract_clean_text(result)
+            bot_reply = extract_clean_text(result)
 
-                if not bot_reply:
-                    bot_reply = "No response could be generated for this request."
+            if not bot_reply:
+                bot_reply = "No response could be generated for this request."
 
-                thinking_placeholder.markdown(
-                    render_message_html("assistant", bot_reply), unsafe_allow_html=True
-                )
-                active_conv["messages"].append({"role": "assistant", "content": bot_reply})
+            thinking_placeholder.markdown(
+                render_message_html("assistant", bot_reply), unsafe_allow_html=True
+            )
+            active_conv["messages"].append({"role": "assistant", "content": bot_reply})
 
-            except Exception as e:
-                error_message = f"An unexpected error occurred while running the agent: {str(e)}"
-                thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
-                active_conv["messages"].append({"role": "assistant", "content": error_message})
-
-        elif AGENT_MODE == "remote":
-
-            try:
-
-                response = requests.get(
-                    f"{REMOTE_API_URL}/ask_query",
-                    params={"query": prompt},
-                    timeout=120,
-                )
-
-                if response.status_code == 200:
-
-                    data = response.json()
-                    bot_reply = extract_clean_text(data)
-
-                    if not bot_reply:
-                        bot_reply = "No response could be generated for this request."
-
-                    thinking_placeholder.markdown(
-                        render_message_html("assistant", bot_reply), unsafe_allow_html=True
-                    )
-                    active_conv["messages"].append({"role": "assistant", "content": bot_reply})
-
-                else:
-
-                    try:
-                        error_data = response.json()
-                        error_message = f"API error {response.status_code}: {extract_clean_text(error_data)}"
-                    except Exception:
-                        error_message = f"API error: {response.status_code}"
-
-                    thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
-                    active_conv["messages"].append({"role": "assistant", "content": error_message})
-
-            except requests.exceptions.Timeout:
-                error_message = "The request exceeded the allotted time. Please try again."
-                thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
-                active_conv["messages"].append({"role": "assistant", "content": error_message})
-
-            except requests.exceptions.ConnectionError:
-                error_message = "Unable to connect to the remote FastAPI backend. Please confirm the server is running."
-                thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
-                active_conv["messages"].append({"role": "assistant", "content": error_message})
-
-            except Exception as e:
-                error_message = f"An unexpected error occurred: {str(e)}"
-                thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
-                active_conv["messages"].append({"role": "assistant", "content": error_message})
-
-        else:
-
-            error_message = "Pearl is unable to reach an agent — the local agent failed to start and no backend API is reachable."
+        except Exception as e:
+            error_message = f"An unexpected error occurred: {str(e)}"
             thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
             active_conv["messages"].append({"role": "assistant", "content": error_message})
 
