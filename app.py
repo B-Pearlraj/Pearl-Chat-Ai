@@ -2108,81 +2108,78 @@ with st.sidebar:
 
     with st.expander("⚙️ Settings", expanded=False):
 
-      # --------------------------------------------------------
-      # PEARL AI CONNECTION STATUS
-      # --------------------------------------------------------
+        # --------------------------------------------------------
+        # PEARL AI STATUS
+        # --------------------------------------------------------
 
-      backend_connected = False
+        backend_connected = False
 
-      try:
-          # Your in-process agent/backend check
-          # Replace this with your actual agent initialization/check
-          if agent is not None:
-              backend_connected = True
-
-      except Exception:
-          backend_connected = False
+        try:
+            # Replace this with your real agent/backend check
+            if agent is not None:
+                backend_connected = True
+        except Exception:
+            backend_connected = False
 
 
-      # --------------------------------------------------------
-      # CONNECTED
-      # --------------------------------------------------------
+        # --------------------------------------------------------
+        # CONNECTED
+        # --------------------------------------------------------
 
-      if backend_connected:
+        if backend_connected:
 
-          st.markdown(
-              """
-              <div class="pearl-status connected">
-                  <span class="status-dot"></span>
-                  <span>Pearl AI Connected</span>
-              </div>
+            st.html("""
+            <div class="pearl-status connected">
+                <span class="status-dot"></span>
+                <span>Pearl AI Connected</span>
+            </div>
 
-              <div class="pearl-backend-info connected-box">
-                  <div class="pearl-icon">✹</div>
+            <div class="pearl-backend-info connected-box">
 
-                  <div>
-                      <b>Pearl AI is ready</b>
-                      <br>
-                      <span>Backend connected successfully.</span>
-                      <br>
-                      <span class="ask-text">You can start asking questions.</span>
-                  </div>
-              </div>
-              """,
-              unsafe_allow_html=True,
-          )
+                <div class="pearl-icon">
+                    ✹
+                </div>
+
+                <div class="pearl-status-content">
+                    <strong>Pearl AI is ready</strong>
+                    <span>Backend connected successfully.</span>
+                    <span class="ask-text">
+                        You can start asking questions.
+                    </span>
+                </div>
+
+            </div>
+            """)
 
 
-      # --------------------------------------------------------
-      # OFFLINE / WAITING
-      # --------------------------------------------------------
+        # --------------------------------------------------------
+        # OFFLINE
+        # --------------------------------------------------------
 
-      else:
+        else:
 
-          st.markdown(
-              """
-              <div class="pearl-status offline">
-                  <span class="status-dot"></span>
-                  <span>Pearl AI Offline</span>
-              </div>
+            st.html("""
+            <div class="pearl-status offline">
+                <span class="status-dot"></span>
+                <span>Pearl AI Offline</span>
+            </div>
 
-              <div class="pearl-backend-info offline-box">
-                  <div class="pearl-icon">⏳</div>
+            <div class="pearl-backend-info offline-box">
 
-                  <div>
-                      <b>Waiting for Pearl AI...</b>
-                      <br>
-                      <span>The backend is currently offline.</span>
-                      <br>
-                      <span class="wait-text">
-                          Please wait while Pearl AI connects.
-                      </span>
-                  </div>
-              </div>
-              """,
-              unsafe_allow_html=True,
-          )
+                <div class="pearl-icon">
+                    ⏳
+                </div>
 
+                <div class="pearl-status-content">
+                    <strong>Waiting for Pearl AI...</strong>
+                    <span>The backend is currently offline.</span>
+                    <span class="wait-text">
+                        Please wait while Pearl AI connects.
+                    </span>
+                </div>
+
+            </div>
+            """)
     # --------------------------------------------------------
     # CLEAR CURRENT CHAT
     # --------------------------------------------------------
