@@ -1887,9 +1887,6 @@ def render_error_html(message):
 #   approach as the agent, so no FastAPI server is needed).
 # ============================================================
 
-if "doc_uploader_key" not in st.session_state:
-    st.session_state.doc_uploader_key = 0
-
 if "doc_flash" not in st.session_state:
     st.session_state.doc_flash = []
 
@@ -1920,27 +1917,9 @@ def format_size(num_bytes):
 
 def render_documents_panel():
 
-    st.markdown(
-        """
-        <style>
-        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"]{
-            background:#11182D !important;
-            border:1px dashed rgba(148,163,184,0.30) !important;
-            border-radius:10px !important;
-        }
-        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] small,
-        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] span,
-        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] div{
-            color:#9CA8C7 !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
     st.caption(
-        "Upload PDF, DOCX, TXT, MD or CSV. Pearl will answer questions "
-        "from these documents."
+        "Attach documents with the + button in the chat box "
+        "(PDF, DOCX, TXT, MD, CSV). Pearl answers from them."
     )
 
     # Messages from the last upload/delete (shown after the rerun)
@@ -1952,44 +1931,6 @@ def render_documents_panel():
         else:
             st.error(text)
     st.session_state.doc_flash = []
-
-    uploaded_files = st.file_uploader(
-        "Choose documents",
-        type=["pdf", "docx", "txt", "md", "csv"],
-        accept_multiple_files=True,
-        key=f"doc_uploader_{st.session_state.doc_uploader_key}",
-        label_visibility="collapsed",
-    )
-
-    if uploaded_files and st.button(
-        "💾  Save to knowledge base",
-        key="doc_save_btn",
-        use_container_width=True,
-    ):
-        flash = []
-        for f in uploaded_files:
-            try:
-                with st.spinner(f"Processing {f.name}..."):
-                    result = vector_store.add_document(
-                        filename=f.name,
-                        data=f.getvalue(),
-                        content_type=f.type,
-                    )
-                if result["status"] == "duplicate":
-                    flash.append(("warning", f"{f.name} was already uploaded."))
-                else:
-                    flash.append(
-                        ("success", f"{f.name} saved ({result['chunk_count']} sections).")
-                    )
-            except ValueError as exc:
-                flash.append(("error", f"{f.name}: {exc}"))
-            except Exception as exc:
-                flash.append(("error", f"{f.name}: upload failed - {exc}"))
-
-        st.session_state.doc_flash = flash
-        st.session_state.doc_uploader_key += 1  # clears the uploader
-        load_documents(force=True)
-        st.rerun()
 
     st.markdown("**Your documents**")
 
@@ -2420,58 +2361,139 @@ with chat_container:
 # CHAT INPUT
 # ============================================================
 
-if prompt := st.chat_input("ASK Anything..."):
+DOC_FILE_TYPES = ["pdf", "docx", "txt", "md", "csv"]
 
-    active_conv["messages"].append({"role": "user", "content": prompt})
+chat_value = st.chat_input(
+    "ASK Anything...  (use + to attach documents)",
+    accept_file="multiple",
+    file_type=DOC_FILE_TYPES,
+)
 
-    # Auto-title this chat from its first message, like a history entry
-    if active_conv["title"] in ("New chat", "", None):
-        short_title = prompt.strip().replace("\n", " ")
-        active_conv["title"] = (short_title[:40] + "…") if len(short_title) > 40 else short_title
+files_were_uploaded = False
 
-    with chat_container:
-        st.markdown(render_message_html("user", prompt), unsafe_allow_html=True)
+if chat_value:
 
-        thinking_placeholder = st.empty()
+    # With accept_file enabled, the value carries both the typed text
+    # and any attached files.
+    prompt = (chat_value.get("text") or "").strip()
+    attached_files = list(chat_value.get("files") or [])
 
-        thinking_placeholder.markdown(render_thinking_html(), unsafe_allow_html=True)
+    if prompt or attached_files:
 
-        try:
+        attached_names = [f.name for f in attached_files]
 
-            # Run the deep agent directly, in-process — no FastAPI
-            # server involved. Each conversation keeps its own
-            # thread_id (its UUID) so separate chats keep separate
-            # agent memory instead of sharing one hardcoded thread.
-            result = agent.invoke(
-                {
-                    "messages": [
+        # What the user sees in their own chat bubble
+        user_display = prompt
+        if attached_names:
+            file_lines = "\n".join(f"📎 {name}" for name in attached_names)
+            user_display = f"{prompt}\n\n{file_lines}" if prompt else file_lines
+
+        active_conv["messages"].append({"role": "user", "content": user_display})
+
+        # Auto-title this chat from its first message, like a history entry
+        if active_conv["title"] in ("New chat", "", None):
+            short_title = (prompt or attached_names[0]).replace("\n", " ")
+            active_conv["title"] = (short_title[:40] + "…") if len(short_title) > 40 else short_title
+
+        with chat_container:
+            st.markdown(render_message_html("user", user_display), unsafe_allow_html=True)
+
+            thinking_placeholder = st.empty()
+
+            thinking_placeholder.markdown(render_thinking_html(), unsafe_allow_html=True)
+
+            try:
+
+                # ----------------------------------------------
+                # 1) Save attached documents to Neon (vector DB)
+                # ----------------------------------------------
+                upload_notes = []
+                saved_names = []
+
+                for f in attached_files:
+                    try:
+                        save_result = vector_store.add_document(
+                            filename=f.name,
+                            data=f.getvalue(),
+                            content_type=f.type,
+                        )
+                        saved_names.append(f.name)
+
+                        if save_result["status"] == "duplicate":
+                            upload_notes.append(f"ℹ️ **{f.name}** was already in your library.")
+                        else:
+                            upload_notes.append(
+                                f"✅ **{f.name}** saved ({save_result['chunk_count']} sections)."
+                            )
+                    except ValueError as exc:
+                        upload_notes.append(f"❌ **{f.name}**: {exc}")
+                    except Exception as exc:
+                        upload_notes.append(f"❌ **{f.name}**: upload failed - {exc}")
+
+                if attached_files:
+                    files_were_uploaded = True
+                    load_documents(force=True)
+
+                # ----------------------------------------------
+                # 2) Ask the agent (only if the user typed a question)
+                # ----------------------------------------------
+                bot_reply = ""
+
+                if prompt:
+                    agent_text = prompt
+                    if saved_names:
+                        agent_text += (
+                            "\n\n[The user just attached: "
+                            + ", ".join(saved_names)
+                            + ". They are now in the document library. "
+                            "Use search_documents to answer, and include the "
+                            "file name in your search query.]"
+                        )
+
+                    # Run the deep agent directly, in-process — no FastAPI
+                    # server involved. Each conversation keeps its own
+                    # thread_id (its UUID) so separate chats keep separate
+                    # agent memory instead of sharing one hardcoded thread.
+                    result = agent.invoke(
                         {
-                            "role": "user",
-                            "content": prompt,
-                        }
-                    ]
-                },
-                config={
-                    "configurable": {
-                        "thread_id": st.session_state.active_id,
-                    }
-                },
-            )
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": agent_text,
+                                }
+                            ]
+                        },
+                        config={
+                            "configurable": {
+                                "thread_id": st.session_state.active_id,
+                            }
+                        },
+                    )
 
-            bot_reply = extract_clean_text(result)
+                    bot_reply = extract_clean_text(result)
 
-            if not bot_reply:
-                bot_reply = "No response could be generated for this request."
+                    if not bot_reply:
+                        bot_reply = "No response could be generated for this request."
 
-            thinking_placeholder.markdown(
-                render_message_html("assistant", bot_reply), unsafe_allow_html=True
-            )
-            active_conv["messages"].append({"role": "assistant", "content": bot_reply})
+                elif saved_names:
+                    bot_reply = "You can now ask me questions about your document."
 
-        except Exception as e:
-            error_message = f"An unexpected error occurred: {str(e)}"
-            thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
-            active_conv["messages"].append({"role": "assistant", "content": error_message})
+                if upload_notes:
+                    bot_reply = "\n".join(upload_notes) + ("\n\n" + bot_reply if bot_reply else "")
+
+                thinking_placeholder.markdown(
+                    render_message_html("assistant", bot_reply), unsafe_allow_html=True
+                )
+                active_conv["messages"].append({"role": "assistant", "content": bot_reply})
+
+            except Exception as e:
+                error_message = f"An unexpected error occurred: {str(e)}"
+                thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
+                active_conv["messages"].append({"role": "assistant", "content": error_message})
+
+        # Refresh the sidebar document list after an upload
+        if files_were_uploaded:
+            st.rerun()
 
 st.markdown(
         """
