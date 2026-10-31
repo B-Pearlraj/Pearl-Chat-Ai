@@ -5,6 +5,7 @@ import re
 import html as htmllib
 import uuid
 import inspect
+import time
 from datetime import datetime
 import os
 
@@ -2119,11 +2120,11 @@ def render_message_html(role, content, files=None):
     return html_block
 
 
-def render_thinking_html():
-    return """
+def render_thinking_html(message="Preparing a considered response&hellip;"):
+    return f"""
     <div class="pearl-row assistant">
       <div class="pearl-avatar assistant"></div>
-      <div class="pearl-thinking">Preparing a considered response&hellip;</div>
+      <div class="pearl-thinking">{message}</div>
     </div>
     """
 
@@ -2673,6 +2674,132 @@ with chat_container:
 
 
 # ============================================================
+# AGENT RUNNER  (streaming + automatic retry when the model is busy)
+#   - Streaming: the answer appears word by word instead of
+#     after a long silent wait.
+#   - Retry: 503 "high demand" / 429 rate-limit errors from the
+#     model provider are temporary, so we retry a few times with
+#     a short back-off before showing an error.
+# ============================================================
+
+USE_STREAMING = True
+MAX_ATTEMPTS = 4
+
+RETRYABLE_MARKERS = (
+    "503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED",
+    "OVERLOADED", "HIGH DEMAND", "TIMED OUT", "TIMEOUT",
+)
+
+
+def is_retryable(exc):
+    text = str(exc).upper()
+    return any(marker in text for marker in RETRYABLE_MARKERS)
+
+
+def friendly_error(exc):
+    if is_retryable(exc):
+        return (
+            "Pearl's AI model is very busy right now (the model provider "
+            "returned a temporary high-demand error, even after several "
+            "retries). Please send your message again in a few seconds."
+        )
+    return f"An unexpected error occurred: {str(exc)}"
+
+
+def chunk_text(content):
+    """Visible text of one streamed chunk (ignores thinking/tool blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif (
+                isinstance(block, dict)
+                and block.get("type") in (None, "text")
+                and isinstance(block.get("text"), str)
+            ):
+                parts.append(block["text"])
+        return "".join(parts)
+    return ""
+
+
+def _run_streaming(payload, config, on_text, on_status):
+    buffer = ""
+    current_id = None
+    tool_turn = False
+    final_state = None
+    last_paint = 0.0
+
+    for mode, data in agent.stream(
+        payload, config=config, stream_mode=["messages", "values"]
+    ):
+        if mode == "values":
+            final_state = data
+            continue
+
+        if mode != "messages":
+            continue
+
+        chunk, meta = data
+
+        # ignore sub-agent output and anything that is not model text
+        if "|" in (meta or {}).get("langgraph_checkpoint_ns", ""):
+            continue
+        if getattr(chunk, "type", "") not in ("AIMessageChunk", "ai"):
+            continue
+
+        # a new model turn starts: forget text from the previous turn
+        chunk_id = getattr(chunk, "id", None)
+        if chunk_id != current_id:
+            current_id = chunk_id
+            buffer = ""
+            tool_turn = False
+
+        # this turn is calling a tool (search, documents...), not answering
+        if getattr(chunk, "tool_call_chunks", None) or getattr(chunk, "tool_calls", None):
+            if not tool_turn:
+                tool_turn = True
+                on_status("Searching and working on your request&hellip;")
+            continue
+        if tool_turn:
+            continue
+
+        text = chunk_text(chunk.content)
+        if text:
+            buffer += text
+            now = time.monotonic()
+            if now - last_paint > 0.06:
+                on_text(buffer)
+                last_paint = now
+
+    reply = extract_clean_text(final_state) if final_state is not None else ""
+    return reply or buffer
+
+
+def run_agent(prompt, thread_id, on_text, on_status):
+    payload = {"messages": [{"role": "user", "content": prompt}]}
+    config = {"configurable": {"thread_id": thread_id}}
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            if USE_STREAMING and hasattr(agent, "stream"):
+                return _run_streaming(payload, config, on_text, on_status)
+            return extract_clean_text(agent.invoke(payload, config=config))
+
+        except Exception as exc:
+            if attempt == MAX_ATTEMPTS or not is_retryable(exc):
+                raise
+            wait = 2 ** attempt  # 2s, 4s, 8s
+            on_status(
+                f"The model is busy &mdash; retrying in {wait}s "
+                f"(attempt {attempt + 1} of {MAX_ATTEMPTS})&hellip;"
+            )
+            time.sleep(wait)
+
+
+# ============================================================
 # CHAT INPUT  (ChatGPT style: "+" button inside the message box)
 # ============================================================
 
@@ -2759,29 +2886,27 @@ if prompt or attached_files:
         else:
             thinking_placeholder.markdown(render_thinking_html(), unsafe_allow_html=True)
 
-            try:
-
-                # Run the deep agent directly, in-process — no FastAPI
-                # server involved. Each conversation keeps its own
-                # thread_id (its UUID) so separate chats keep separate
-                # agent memory instead of sharing one hardcoded thread.
-                result = agent.invoke(
-                    {
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": prompt,
-                            }
-                        ]
-                    },
-                    config={
-                        "configurable": {
-                            "thread_id": st.session_state.active_id,
-                        }
-                    },
+            def paint_text(text):
+                thinking_placeholder.markdown(
+                    render_message_html("assistant", text + " ▌"),
+                    unsafe_allow_html=True,
                 )
 
-                bot_reply = extract_clean_text(result)
+            def paint_status(message):
+                thinking_placeholder.markdown(
+                    render_thinking_html(message), unsafe_allow_html=True
+                )
+
+            try:
+
+                # Runs the deep agent in-process (no FastAPI). Each chat keeps
+                # its own thread_id so separate chats keep separate memory.
+                bot_reply = run_agent(
+                    prompt,
+                    st.session_state.active_id,
+                    on_text=paint_text,
+                    on_status=paint_status,
+                )
 
                 if not bot_reply:
                     bot_reply = "No response could be generated for this request."
@@ -2792,11 +2917,14 @@ if prompt or attached_files:
                 active_conv["messages"].append({"role": "assistant", "content": bot_reply})
 
             except Exception as e:
-                error_message = f"An unexpected error occurred: {str(e)}"
+                error_message = friendly_error(e)
                 thinking_placeholder.markdown(
                     render_error_html(error_message), unsafe_allow_html=True
                 )
                 active_conv["messages"].append({"role": "assistant", "content": error_message})
+
+    # Redraw once so the sidebar chat title updates right after the first message
+    st.rerun()
 
 # No new submission this run: just draw the document list
 if not docs_rendered:
