@@ -8,6 +8,7 @@ from datetime import datetime
 import os
 
 from main import agent
+import vector_store
 
 # ============================================================
 # RECURSIVE TEXT EXTRACTION  (unchanged backend logic)
@@ -1880,6 +1881,151 @@ def render_error_html(message):
 # SIDEBAR — CHATGPT STYLE
 # ============================================================
 
+# ============================================================
+# DOCUMENT LIBRARY HELPERS
+#   Talks to Neon directly through vector_store (same in-process
+#   approach as the agent, so no FastAPI server is needed).
+# ============================================================
+
+if "doc_uploader_key" not in st.session_state:
+    st.session_state.doc_uploader_key = 0
+
+if "doc_flash" not in st.session_state:
+    st.session_state.doc_flash = []
+
+if "doc_list_cache" not in st.session_state:
+    st.session_state.doc_list_cache = None
+
+
+def load_documents(force=False):
+    """Read the document list from Neon once, then reuse it until it changes."""
+    if force or st.session_state.doc_list_cache is None:
+        try:
+            st.session_state.doc_list_cache = {
+                "docs": vector_store.list_documents(),
+                "error": None,
+            }
+        except Exception as exc:
+            st.session_state.doc_list_cache = {"docs": [], "error": str(exc)}
+    return st.session_state.doc_list_cache
+
+
+def format_size(num_bytes):
+    if not num_bytes:
+        return ""
+    if num_bytes < 1024 * 1024:
+        return f"{num_bytes / 1024:.0f} KB"
+    return f"{num_bytes / (1024 * 1024):.1f} MB"
+
+
+def render_documents_panel():
+
+    st.markdown(
+        """
+        <style>
+        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"]{
+            background:#11182D !important;
+            border:1px dashed rgba(148,163,184,0.30) !important;
+            border-radius:10px !important;
+        }
+        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] small,
+        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] span,
+        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] div{
+            color:#9CA8C7 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.caption(
+        "Upload PDF, DOCX, TXT, MD or CSV. Pearl will answer questions "
+        "from these documents."
+    )
+
+    # Messages from the last upload/delete (shown after the rerun)
+    for kind, text in st.session_state.doc_flash:
+        if kind == "success":
+            st.success(text)
+        elif kind == "warning":
+            st.warning(text)
+        else:
+            st.error(text)
+    st.session_state.doc_flash = []
+
+    uploaded_files = st.file_uploader(
+        "Choose documents",
+        type=["pdf", "docx", "txt", "md", "csv"],
+        accept_multiple_files=True,
+        key=f"doc_uploader_{st.session_state.doc_uploader_key}",
+        label_visibility="collapsed",
+    )
+
+    if uploaded_files and st.button(
+        "💾  Save to knowledge base",
+        key="doc_save_btn",
+        use_container_width=True,
+    ):
+        flash = []
+        for f in uploaded_files:
+            try:
+                with st.spinner(f"Processing {f.name}..."):
+                    result = vector_store.add_document(
+                        filename=f.name,
+                        data=f.getvalue(),
+                        content_type=f.type,
+                    )
+                if result["status"] == "duplicate":
+                    flash.append(("warning", f"{f.name} was already uploaded."))
+                else:
+                    flash.append(
+                        ("success", f"{f.name} saved ({result['chunk_count']} sections).")
+                    )
+            except ValueError as exc:
+                flash.append(("error", f"{f.name}: {exc}"))
+            except Exception as exc:
+                flash.append(("error", f"{f.name}: upload failed - {exc}"))
+
+        st.session_state.doc_flash = flash
+        st.session_state.doc_uploader_key += 1  # clears the uploader
+        load_documents(force=True)
+        st.rerun()
+
+    st.markdown("**Your documents**")
+
+    cache = load_documents()
+
+    if cache["error"]:
+        st.error(f"Document library unavailable: {cache['error']}")
+        return
+
+    if not cache["docs"]:
+        st.caption("No documents uploaded yet.")
+        return
+
+    for doc in cache["docs"]:
+        col_name, col_del = st.columns([5, 1])
+        with col_name:
+            details = " · ".join(
+                x for x in [
+                    f"{doc['page_count']} pages" if doc.get("page_count") else "",
+                    format_size(doc.get("file_size")),
+                ] if x
+            )
+            st.markdown(f"📄 {doc['filename']}")
+            if details:
+                st.caption(details)
+        with col_del:
+            if st.button("🗑", key=f"doc_del_{doc['id']}", help="Delete this document"):
+                try:
+                    vector_store.delete_document(doc["id"])
+                    st.session_state.doc_flash = [("success", f"{doc['filename']} deleted.")]
+                except Exception as exc:
+                    st.session_state.doc_flash = [("error", f"Delete failed: {exc}")]
+                load_documents(force=True)
+                st.rerun()
+
+
 with st.sidebar:
 
     # --------------------------------------------------------
@@ -2084,6 +2230,13 @@ with st.sidebar:
 
  
     # --------------------------------------------------------
+    # DOCUMENTS (upload -> Neon vector DB -> chat answers)
+    # --------------------------------------------------------
+
+    with st.expander("📄  Documents", expanded=False):
+        render_documents_panel()
+
+    # --------------------------------------------------------
     # CAPABILITIES
     # --------------------------------------------------------
 
@@ -2104,6 +2257,14 @@ with st.sidebar:
                 <div>
                     <b>Technical Support</b>
                     <small>Python, FastAPI, Streamlit,AWS</small>
+                </div>
+            </div>
+
+            <div class="chatgpt-capability">
+                <span>📄</span>
+                <div>
+                    <b>Document Q&amp;A</b>
+                    <small>Ask questions about your uploaded files</small>
                 </div>
             </div>
 
