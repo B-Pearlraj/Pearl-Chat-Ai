@@ -4,6 +4,7 @@ import ast
 import re
 import html as htmllib
 import uuid
+import inspect
 from datetime import datetime
 import os
 
@@ -1603,7 +1604,7 @@ div[data-testid="stChatInput"] textarea::placeholder{
 
 /* Send button */
 
-div[data-testid="stChatInput"] button{
+div[data-testid="stChatInput"] button[data-testid="stChatInputSubmitButton"]{
 
     width:40px !important;
 
@@ -1641,7 +1642,7 @@ div[data-testid="stChatInput"] button{
 
 /* Send button hover */
 
-div[data-testid="stChatInput"] button:hover{
+div[data-testid="stChatInput"] button[data-testid="stChatInputSubmitButton"]:hover{
 
     background:
         linear-gradient(
@@ -1661,7 +1662,7 @@ div[data-testid="stChatInput"] button:hover{
 
 /* Send button active */
 
-div[data-testid="stChatInput"] button:active{
+div[data-testid="stChatInput"] button[data-testid="stChatInputSubmitButton"]:active{
 
     transform:
         scale(0.94) !important;
@@ -1671,7 +1672,7 @@ div[data-testid="stChatInput"] button:active{
 
 /* Send icon */
 
-div[data-testid="stChatInput"] button svg{
+div[data-testid="stChatInput"] button[data-testid="stChatInputSubmitButton"] svg{
 
     width:19px !important;
 
@@ -1713,7 +1714,7 @@ div[data-testid="stChatInput"] textarea:focus{
 
     }
 
-    div[data-testid="stChatInput"] button{
+    div[data-testid="stChatInput"] button[data-testid="stChatInputSubmitButton"]{
 
         width:36px !important;
 
@@ -1779,6 +1780,240 @@ div[data-testid="stStatusWidget"]{
 }
 
 
+
+/* ============================================================
+   CHATGPT-STYLE "+" ATTACH BUTTON (inside the message box)
+   ============================================================ */
+
+div[data-testid="stChatInputFileUploadButton"]{
+  display:flex !important;
+  align-items:center !important;
+  margin-left:10px !important;
+}
+
+div[data-testid="stChatInputFileUploadButton"] button{
+  width:38px !important;
+  height:38px !important;
+  min-width:38px !important;
+  min-height:38px !important;
+  padding:0 !important;
+  border:none !important;
+  border-radius:50% !important;
+  background:rgba(148,163,184,0.14) !important;
+  box-shadow:none !important;
+  color:#E2E8F0 !important;
+  display:flex !important;
+  align-items:center !important;
+  justify-content:center !important;
+  transition:background 0.15s ease, transform 0.15s ease !important;
+}
+
+div[data-testid="stChatInputFileUploadButton"] button:hover{
+  background:rgba(99,102,241,0.30) !important;
+  transform:none !important;
+}
+
+/* hide Streamlit's paperclip icon and draw a "+" instead */
+div[data-testid="stChatInputFileUploadButton"] button > *{
+  display:none !important;
+}
+
+div[data-testid="stChatInputFileUploadButton"] button::before{
+  content:"+";
+  font-family:'Inter',sans-serif;
+  font-size:26px;
+  font-weight:400;
+  line-height:1;
+  color:#E2E8F0;
+  margin-top:-2px;
+}
+
+/* ============================================================
+   ATTACHED-FILE CHIPS (inside chat bubbles)
+   ============================================================ */
+
+.pearl-files{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-bottom:8px;
+}
+
+.pearl-file-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:9px;
+  max-width:100%;
+  padding:7px 12px;
+  border-radius:12px;
+  background:rgba(11,16,32,0.55);
+  border:1px solid rgba(148,163,184,0.20);
+  font-size:0.8rem;
+  color:#E2E8F0;
+}
+
+.pearl-file-chip .ico{ font-size:1.05rem; }
+
+.pearl-file-chip .meta{
+  display:flex;
+  flex-direction:column;
+  min-width:0;
+}
+
+.pearl-file-chip .name{
+  font-weight:600;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.pearl-file-chip .note{
+  font-size:0.68rem;
+  color:#9CA8C7;
+}
+
+.pearl-file-chip.ok{ border-color:rgba(74,222,128,0.35); }
+.pearl-file-chip.ok .note{ color:#4ADE80; }
+.pearl-file-chip.warn{ border-color:rgba(250,204,21,0.35); }
+.pearl-file-chip.warn .note{ color:#FACC15; }
+.pearl-file-chip.err{ border-color:rgba(248,113,113,0.40); }
+.pearl-file-chip.err .note{ color:#F87171; }
+.pearl-file-chip.pending .note{ color:#A5B4FC; }
+
+/* ============================================================
+   SIDEBAR (the chatgpt-* classes used by the markup)
+   ============================================================ */
+
+.chatgpt-side-header{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  margin:4px 0 16px 0;
+}
+
+.chatgpt-logo-orb{
+  width:34px;
+  height:34px;
+  border-radius:50%;
+  background:conic-gradient(from 180deg,#6366F1,#22D3EE,#8B5CF6,#38BDF8,#6366F1);
+  box-shadow:0 0 0 3px #0D1427, 0 0 20px rgba(99,102,241,0.45);
+  animation:pearl-spin 8s linear infinite;
+}
+
+.chatgpt-brand-title{
+  font-family:'Space Grotesk',sans-serif;
+  font-weight:700;
+  font-size:1.15rem;
+  color:#F8FAFC;
+  line-height:1.1;
+}
+
+.chatgpt-brand-subtitle{
+  font-size:0.68rem;
+  color:#7180A2;
+  text-transform:uppercase;
+  letter-spacing:0.13em;
+  margin-top:2px;
+}
+
+.chatgpt-section-title{
+  font-family:'Space Grotesk',sans-serif;
+  font-size:0.78rem;
+  font-weight:600;
+  color:#94A3B8;
+  letter-spacing:0.04em;
+  margin:18px 0 6px 2px;
+}
+
+.chatgpt-empty-history{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-size:0.78rem;
+  color:#687590;
+  font-style:italic;
+  padding:8px 2px;
+}
+
+.chatgpt-delete-box{
+  font-size:0.78rem;
+  color:#FCA5A5;
+  margin:4px 2px 6px 2px;
+}
+
+.chatgpt-sidebar-spacer{ height:14px; }
+
+.chatgpt-capability{
+  display:flex;
+  gap:10px;
+  align-items:flex-start;
+  padding:7px 0;
+  font-size:0.8rem;
+  color:#8E9BB8;
+}
+
+.chatgpt-capability b{ color:#E2E8F0; display:block; }
+.chatgpt-capability small{ color:#8491AF; font-size:0.72rem; }
+
+/* New chat button */
+section[data-testid="stSidebar"] .st-key-sidebar_new_chat button{
+  background:linear-gradient(135deg,#6366F1,#7C3AED) !important;
+  border:1px solid rgba(129,140,248,0.40) !important;
+  color:#FFFFFF !important;
+  font-weight:700 !important;
+  box-shadow:0 5px 18px rgba(99,102,241,0.25) !important;
+}
+
+section[data-testid="stSidebar"] .st-key-sidebar_new_chat button:hover{
+  background:linear-gradient(135deg,#4F46E5,#6D28D9) !important;
+}
+
+/* History rows: flat list; the open chat is the "primary" button */
+section[data-testid="stSidebar"] [class*="st-key-open_chat_"] button{
+  justify-content:flex-start !important;
+  text-align:left !important;
+  background:transparent !important;
+  border:1px solid transparent !important;
+  color:#AAB5CD !important;
+  font-weight:500 !important;
+  box-shadow:none !important;
+}
+
+section[data-testid="stSidebar"] [class*="st-key-open_chat_"] button:hover{
+  background:rgba(99,102,241,0.10) !important;
+  border-color:rgba(99,102,241,0.18) !important;
+  color:#E2E8F0 !important;
+}
+
+section[data-testid="stSidebar"] [class*="st-key-open_chat_"] button[data-testid="stBaseButton-primary"]{
+  background:linear-gradient(135deg,rgba(99,102,241,0.20),rgba(34,211,238,0.08)) !important;
+  border:1px solid rgba(99,102,241,0.30) !important;
+  color:#C7D2FE !important;
+  font-weight:700 !important;
+}
+
+section[data-testid="stSidebar"] [class*="st-key-menu_chat_"] button{
+  background:transparent !important;
+  border:none !important;
+  color:#64718C !important;
+  box-shadow:none !important;
+}
+
+section[data-testid="stSidebar"] [class*="st-key-menu_chat_"] button:hover{
+  color:#F87171 !important;
+  background:rgba(239,68,68,0.10) !important;
+}
+
+/* Document rows in the sidebar */
+.pearl-doc-row{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-size:0.82rem;
+  color:#E2E8F0;
+  word-break:break-word;
+}
+
 </style>
 """
 
@@ -1823,7 +2058,28 @@ active_conv = st.session_state.conversations[st.session_state.active_id]
 # HELPERS FOR RENDERING BUBBLES
 # ============================================================
 
-def render_message_html(role, content):
+def render_file_chips_html(files):
+    """Little ChatGPT-style attachment cards shown above a user message."""
+    if not files:
+        return ""
+
+    icons = {"ok": "📄", "warn": "⚠️", "err": "❌", "pending": "⏳"}
+    chips = []
+    for f in files:
+        state = f.get("state", "ok")
+        name = htmllib.escape(f.get("name", "file"))
+        note = htmllib.escape(f.get("note", ""))
+        chips.append(
+            f'<div class="pearl-file-chip {state}">'
+            f'<span class="ico">{icons.get(state, "📄")}</span>'
+            f'<span class="meta"><span class="name">{name}</span>'
+            f'<span class="note">{note}</span></span>'
+            f'</div>'
+        )
+    return '<div class="pearl-files">' + "".join(chips) + "</div>"
+
+
+def render_message_html(role, content, files=None):
 
     avatar_html = (
         '<div class="pearl-avatar assistant"></div>'
@@ -1839,7 +2095,12 @@ def render_message_html(role, content):
     if role == "assistant":
         body_html = markdown_to_html(content)
     else:
-        body_html = "<p>" + htmllib.escape(content).replace("\n", "<br>") + "</p>"
+        body_html = (
+            "<p>" + htmllib.escape(content).replace("\n", "<br>") + "</p>"
+            if content
+            else ""
+        )
+        body_html = render_file_chips_html(files) + body_html
 
     if role == "user":
         html_block = f"""
@@ -1918,32 +2179,56 @@ def format_size(num_bytes):
     return f"{num_bytes / (1024 * 1024):.1f} MB"
 
 
+ALLOWED_DOC_TYPES = ["pdf", "docx", "txt", "md", "csv"]
+
+# Streamlit >= 1.43 can put a "+" attach button inside st.chat_input.
+# Older versions fall back to the sidebar uploader.
+CHAT_FILE_SUPPORT = "accept_file" in inspect.signature(st.chat_input).parameters
+
+
+def ingest_files(files):
+    """Save uploaded files into the Neon vector store.
+
+    Returns one dict per file: {"name", "state" (ok/warn/err), "note"}.
+    """
+    results = []
+
+    for f in files:
+        try:
+            with st.spinner(f"Processing {f.name}..."):
+                result = vector_store.add_document(
+                    filename=f.name,
+                    data=f.getvalue(),
+                    content_type=f.type,
+                )
+            if result["status"] == "duplicate":
+                results.append(
+                    {"name": f.name, "state": "warn", "note": "Already uploaded"}
+                )
+            else:
+                results.append(
+                    {
+                        "name": f.name,
+                        "state": "ok",
+                        "note": f"Added to knowledge base \u00b7 {result['chunk_count']} sections",
+                    }
+                )
+        except ValueError as exc:
+            results.append({"name": f.name, "state": "err", "note": str(exc)})
+        except Exception as exc:
+            results.append(
+                {"name": f.name, "state": "err", "note": f"Upload failed - {exc}"}
+            )
+
+    if results:
+        load_documents(force=True)
+
+    return results
+
+
 def render_documents_panel():
 
-    st.markdown(
-        """
-        <style>
-        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"]{
-            background:#11182D !important;
-            border:1px dashed rgba(148,163,184,0.30) !important;
-            border-radius:10px !important;
-        }
-        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] small,
-        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] span,
-        section[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] div{
-            color:#9CA8C7 !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.caption(
-        "Upload PDF, DOCX, TXT, MD or CSV. Pearl will answer questions "
-        "from these documents."
-    )
-
-    # Messages from the last upload/delete (shown after the rerun)
+    # Messages from the last delete / legacy upload (shown after the rerun)
     for kind, text in st.session_state.doc_flash:
         if kind == "success":
             st.success(text)
@@ -1953,43 +2238,39 @@ def render_documents_panel():
             st.error(text)
     st.session_state.doc_flash = []
 
-    uploaded_files = st.file_uploader(
-        "Choose documents",
-        type=["pdf", "docx", "txt", "md", "csv"],
-        accept_multiple_files=True,
-        key=f"doc_uploader_{st.session_state.doc_uploader_key}",
-        label_visibility="collapsed",
-    )
+    if CHAT_FILE_SUPPORT:
+        st.caption(
+            "Add files with the + button in the message box "
+            "(PDF, DOCX, TXT, MD or CSV). Pearl answers from them."
+        )
+    else:
+        # Fallback for old Streamlit versions: classic sidebar uploader
+        st.caption(
+            "Upload PDF, DOCX, TXT, MD or CSV. Pearl will answer questions "
+            "from these documents. (Upgrade Streamlit to 1.43+ to attach "
+            "files from the chat box with a + button.)"
+        )
 
-    if uploaded_files and st.button(
-        "💾  Save to knowledge base",
-        key="doc_save_btn",
-        use_container_width=True,
-    ):
-        flash = []
-        for f in uploaded_files:
-            try:
-                with st.spinner(f"Processing {f.name}..."):
-                    result = vector_store.add_document(
-                        filename=f.name,
-                        data=f.getvalue(),
-                        content_type=f.type,
-                    )
-                if result["status"] == "duplicate":
-                    flash.append(("warning", f"{f.name} was already uploaded."))
-                else:
-                    flash.append(
-                        ("success", f"{f.name} saved ({result['chunk_count']} sections).")
-                    )
-            except ValueError as exc:
-                flash.append(("error", f"{f.name}: {exc}"))
-            except Exception as exc:
-                flash.append(("error", f"{f.name}: upload failed - {exc}"))
+        uploaded_files = st.file_uploader(
+            "Choose documents",
+            type=ALLOWED_DOC_TYPES,
+            accept_multiple_files=True,
+            key=f"doc_uploader_{st.session_state.doc_uploader_key}",
+            label_visibility="collapsed",
+        )
 
-        st.session_state.doc_flash = flash
-        st.session_state.doc_uploader_key += 1  # clears the uploader
-        load_documents(force=True)
-        st.rerun()
+        if uploaded_files and st.button(
+            "💾  Save to knowledge base",
+            key="doc_save_btn",
+            use_container_width=True,
+        ):
+            flash = []
+            for r in ingest_files(uploaded_files):
+                kind = {"ok": "success", "warn": "warning"}.get(r["state"], "error")
+                flash.append((kind, f"{r['name']}: {r['note']}"))
+            st.session_state.doc_flash = flash
+            st.session_state.doc_uploader_key += 1  # clears the uploader
+            st.rerun()
 
     st.markdown("**Your documents**")
 
@@ -2051,8 +2332,6 @@ with st.sidebar:
     # NEW CHAT
     # --------------------------------------------------------
 
-    st.markdown('<div class="chatgpt-new-chat-wrap">', unsafe_allow_html=True)
-
     if st.button(
         "＋  New chat",
         key="sidebar_new_chat",
@@ -2060,8 +2339,6 @@ with st.sidebar:
     ):
         new_conversation()
         st.rerun()
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
     # --------------------------------------------------------
     # SEARCH / HISTORY TITLE
@@ -2112,28 +2389,6 @@ with st.sidebar:
             if len(title) > 32:
                 title = title[:32] + "…"
 
-            # ------------------------------------------------
-            # ACTIVE CHAT
-            # ------------------------------------------------
-
-            if is_active:
-
-                st.markdown(
-                    """
-                    <div class="chatgpt-history-active">
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-            else:
-
-                st.markdown(
-                    """
-                    <div class="chatgpt-history-item">
-                    """,
-                    unsafe_allow_html=True,
-                )
-
             history_col, delete_col = st.columns([6, 1])
 
             with history_col:
@@ -2141,6 +2396,7 @@ with st.sidebar:
                 if st.button(
                     f"✹  {title}",
                     key=f"open_chat_{cid}",
+                    type="primary" if is_active else "secondary",
                     use_container_width=True,
                 ):
                     st.session_state.active_id = cid
@@ -2155,8 +2411,6 @@ with st.sidebar:
                 ):
                     st.session_state[f"delete_confirm_{cid}"] = True
                     st.rerun()
-
-            st.markdown("</div>", unsafe_allow_html=True)
 
             # ------------------------------------------------
             # DELETE CONFIRMATION
@@ -2234,7 +2488,9 @@ with st.sidebar:
     # --------------------------------------------------------
 
     with st.expander("📄  Documents", expanded=False):
-        render_documents_panel()
+        # Filled in further down, once any file attached in the chat box
+        # has been processed, so the list is never out of date.
+        docs_slot = st.container()
 
     # --------------------------------------------------------
     # CAPABILITIES
@@ -2411,67 +2667,141 @@ with chat_container:
         )
     else:
         history_html = "".join(
-            render_message_html(m["role"], m["content"]) for m in active_conv["messages"]
+            render_message_html(m["role"], m["content"], m.get("files")) for m in active_conv["messages"]
         )
         st.markdown(history_html, unsafe_allow_html=True)
 
 
 # ============================================================
-# CHAT INPUT
+# CHAT INPUT  (ChatGPT style: "+" button inside the message box)
 # ============================================================
 
-if prompt := st.chat_input("ASK Anything..."):
+if CHAT_FILE_SUPPORT:
+    submission = st.chat_input(
+        "Ask anything...",
+        accept_file="multiple",
+        file_type=ALLOWED_DOC_TYPES,
+        key="pearl_chat_input",
+    )
+else:
+    submission = st.chat_input("Ask anything...")
 
-    active_conv["messages"].append({"role": "user", "content": prompt})
+prompt = ""
+attached_files = []
 
-    # Auto-title this chat from its first message, like a history entry
+if submission:
+    if isinstance(submission, str):
+        prompt = submission.strip()
+    else:
+        prompt = (getattr(submission, "text", "") or "").strip()
+        attached_files = list(getattr(submission, "files", []) or [])
+
+docs_rendered = False
+
+if prompt or attached_files:
+
+    # Auto-title this chat from its first message (or first file)
     if active_conv["title"] in ("New chat", "", None):
-        short_title = prompt.strip().replace("\n", " ")
+        title_source = prompt or (attached_files[0].name if attached_files else "")
+        short_title = title_source.replace("\n", " ")
         active_conv["title"] = (short_title[:40] + "…") if len(short_title) > 40 else short_title
 
     with chat_container:
-        st.markdown(render_message_html("user", prompt), unsafe_allow_html=True)
+
+        # Show the user's message straight away, with the files marked
+        # "uploading" until they are saved.
+        user_placeholder = st.empty()
+
+        pending_chips = [
+            {"name": f.name, "state": "pending", "note": "Uploading…"}
+            for f in attached_files
+        ]
+        user_placeholder.markdown(
+            render_message_html("user", prompt, pending_chips), unsafe_allow_html=True
+        )
+
+        file_results = ingest_files(attached_files) if attached_files else []
+
+        active_conv["messages"].append(
+            {"role": "user", "content": prompt, "files": file_results}
+        )
+        user_placeholder.markdown(
+            render_message_html("user", prompt, file_results), unsafe_allow_html=True
+        )
+
+        # Refresh the sidebar document list now that new files are saved
+        with docs_slot:
+            render_documents_panel()
+        docs_rendered = True
 
         thinking_placeholder = st.empty()
 
-        thinking_placeholder.markdown(render_thinking_html(), unsafe_allow_html=True)
-
-        try:
-
-            # Run the deep agent directly, in-process — no FastAPI
-            # server involved. Each conversation keeps its own
-            # thread_id (its UUID) so separate chats keep separate
-            # agent memory instead of sharing one hardcoded thread.
-            result = agent.invoke(
-                {
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": prompt,
-                        }
-                    ]
-                },
-                config={
-                    "configurable": {
-                        "thread_id": st.session_state.active_id,
-                    }
-                },
-            )
-
-            bot_reply = extract_clean_text(result)
-
-            if not bot_reply:
-                bot_reply = "No response could be generated for this request."
+        if not prompt:
+            # Files only, no question: confirm and wait for the next message
+            added = [r["name"] for r in file_results if r["state"] == "ok"]
+            if added:
+                names = ", ".join(f"**{n}**" for n in added)
+                bot_reply = (
+                    f"I've added {names} to the knowledge base. "
+                    "What would you like to know about it?"
+                )
+            else:
+                bot_reply = (
+                    "I couldn't add the attached file(s) - see the status above. "
+                    "Please try again."
+                )
 
             thinking_placeholder.markdown(
                 render_message_html("assistant", bot_reply), unsafe_allow_html=True
             )
             active_conv["messages"].append({"role": "assistant", "content": bot_reply})
 
-        except Exception as e:
-            error_message = f"An unexpected error occurred: {str(e)}"
-            thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
-            active_conv["messages"].append({"role": "assistant", "content": error_message})
+        else:
+            thinking_placeholder.markdown(render_thinking_html(), unsafe_allow_html=True)
+
+            try:
+
+                # Run the deep agent directly, in-process — no FastAPI
+                # server involved. Each conversation keeps its own
+                # thread_id (its UUID) so separate chats keep separate
+                # agent memory instead of sharing one hardcoded thread.
+                result = agent.invoke(
+                    {
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": prompt,
+                            }
+                        ]
+                    },
+                    config={
+                        "configurable": {
+                            "thread_id": st.session_state.active_id,
+                        }
+                    },
+                )
+
+                bot_reply = extract_clean_text(result)
+
+                if not bot_reply:
+                    bot_reply = "No response could be generated for this request."
+
+                thinking_placeholder.markdown(
+                    render_message_html("assistant", bot_reply), unsafe_allow_html=True
+                )
+                active_conv["messages"].append({"role": "assistant", "content": bot_reply})
+
+            except Exception as e:
+                error_message = f"An unexpected error occurred: {str(e)}"
+                thinking_placeholder.markdown(
+                    render_error_html(error_message), unsafe_allow_html=True
+                )
+                active_conv["messages"].append({"role": "assistant", "content": error_message})
+
+# No new submission this run: just draw the document list
+if not docs_rendered:
+    with docs_slot:
+        render_documents_panel()
 
 st.markdown(
         """
