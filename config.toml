@@ -1,2 +1,56 @@
+# Place this file at:  <project-root>/.streamlit/config.toml
+# Tailored for Pearl.Ai (app.py)
+
+# ------------------------------------------------------------
+# THEME  (matches the CSS variables in app.py)
+#   --pearl-bg #0B1020 | --pearl-bg-alt #11182D | --ink #F5F7FF
+#   --accent #6366F1
+# ------------------------------------------------------------
+[theme]
+base = "dark"
+primaryColor = "#6366F1"
+backgroundColor = "#0B1020"
+secondaryBackgroundColor = "#11182D"
+textColor = "#F5F7FF"
+font = "sans serif"
+
+# ------------------------------------------------------------
+# SERVER
+# ------------------------------------------------------------
 [server]
+# Max size (MB) per attached file in the chat input
+# (pdf, docx, txt, md, csv are accepted by app.py)
 maxUploadSize = 10
+
+# Needed on cloud hosts (Render, Railway, HF Spaces, etc.)
+headless = true
+
+# Keep security protections on
+enableXsrfProtection = true
+enableCORS = true
+
+# Don't auto-rerun when files change (avoids re-importing the agent/main.py)
+runOnSave = false
+
+# ------------------------------------------------------------
+# BROWSER
+# ------------------------------------------------------------
+[browser]
+gatherUsageStats = false
+
+# ------------------------------------------------------------
+# CLIENT / UI
+# ------------------------------------------------------------
+[client]
+# app.py already hides the toolbar/deploy button via CSS;
+# this also removes it at the Streamlit level
+toolbarMode = "minimal"
+
+# Hide Python stack traces from users (app.py shows its own error messages)
+showErrorDetails = "none"
+
+# ------------------------------------------------------------
+# RUNNER
+# ------------------------------------------------------------
+[runner]
+fastReruns = true
