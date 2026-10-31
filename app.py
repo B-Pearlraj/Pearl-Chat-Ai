@@ -1,7 +1,9 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import json
 import ast
 import re
+import copy
 import html as htmllib
 import uuid
 from datetime import datetime
@@ -1779,6 +1781,53 @@ div[data-testid="stStatusWidget"]{
 }
 
 
+/* ============================================================
+   MESSAGE ACTION BAR
+   ============================================================ */
+
+[class*="st-key-act_"]{
+  margin-top:-10px;
+  margin-bottom:6px;
+}
+
+[class*="st-key-act_"] [data-testid="stHorizontalBlock"]{
+  gap:0.15rem !important;
+  align-items:center;
+}
+
+[class*="st-key-act_"] button{
+  background:transparent !important;
+  border:none !important;
+  box-shadow:none !important;
+  color:#7F8BA6 !important;
+  padding:2px 8px !important;
+  min-height:30px !important;
+  font-size:0.95rem !important;
+  border-radius:8px !important;
+}
+
+[class*="st-key-act_"] button:hover{
+  background:rgba(148,163,184,0.14) !important;
+  color:#E2E8F0 !important;
+}
+
+[class*="st-key-act_"] button[kind="primary"]{
+  color:#A5B4FC !important;
+  background:rgba(99,102,241,0.20) !important;
+}
+
+[class*="st-key-act_"] iframe{
+  border:none !important;
+  background:transparent !important;
+}
+
+.pearl-edit-note{
+  font-size:0.75rem;
+  color:#7F8BA6;
+  margin:4px 0;
+}
+
+
 </style>
 """
 
@@ -1878,8 +1927,217 @@ def render_error_html(message):
 
 
 # ============================================================
-# SIDEBAR — CHATGPT STYLE
+# MESSAGE ACTIONS
+#   Copy / Read aloud / Share run in the browser (HTML component).
+#   Edit / Try again / Rate / Branch / Versions are Streamlit
+#   buttons that change the conversation in Python.
 # ============================================================
+
+ICONS = {
+    "copy": '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/></svg>',
+    "check": '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="#4ADE80" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+    "share": '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M8 8l4-4 4 4"/><path d="M5 13v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/></svg>',
+    "speak": '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5z"/><path d="M15.5 9a4 4 0 0 1 0 6"/><path d="M18 6.5a8 8 0 0 1 0 11"/></svg>',
+    "stop": '<svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>',
+}
+
+TOOLTIPS = {"copy": None, "share": "Share", "speak": "Read aloud"}
+
+
+def client_actions(text, actions, is_user):
+    """Copy / Read aloud / Share — these run in the browser."""
+
+    payload = json.dumps(text).replace("</", "<\\/")
+    copy_tip = "Copy message" if is_user else "Copy response"
+
+    buttons = ""
+    for a in actions:
+        tip = copy_tip if a == "copy" else TOOLTIPS[a]
+        buttons += f'<button id="b-{a}" title="{tip}" onclick="act_{a}(this)">{ICONS[a]}</button>'
+
+    html = f"""
+    <style>
+      body{{margin:0;background:transparent;display:flex;gap:2px;font-family:sans-serif}}
+      button{{background:transparent;border:none;color:#7F8BA6;cursor:pointer;
+              width:32px;height:30px;border-radius:8px;display:flex;
+              align-items:center;justify-content:center;padding:0}}
+      button:hover{{background:rgba(148,163,184,0.16);color:#E2E8F0}}
+    </style>
+    {buttons}
+    <script>
+      const T = {payload};
+      const ICON = {json.dumps(ICONS)};
+
+      function fallbackCopy(){{
+        const ta = document.createElement('textarea');
+        ta.value = T; document.body.appendChild(ta); ta.select();
+        try {{ document.execCommand('copy'); }} catch(e) {{}}
+        document.body.removeChild(ta);
+      }}
+
+      function flashCheck(btn){{
+        btn.innerHTML = ICON.check;
+        setTimeout(() => btn.innerHTML = ICON.copy, 1500);
+      }}
+
+      function act_copy(btn){{
+        if (navigator.clipboard && navigator.clipboard.writeText) {{
+          navigator.clipboard.writeText(T).then(() => flashCheck(btn)).catch(() => {{ fallbackCopy(); flashCheck(btn); }});
+        }} else {{ fallbackCopy(); flashCheck(btn); }}
+      }}
+
+      function act_share(btn){{
+        if (navigator.share) {{
+          navigator.share({{ text: T }}).catch(() => {{}});
+        }} else {{
+          act_copy(btn);
+          btn.title = 'Copied to clipboard';
+        }}
+      }}
+
+      function act_speak(btn){{
+        const synth = window.speechSynthesis;
+        if (!synth) return;
+        if (synth.speaking) {{ synth.cancel(); btn.innerHTML = ICON.speak; return; }}
+        const u = new SpeechSynthesisUtterance(T.replace(/[*_`#]/g, ''));
+        u.onend = u.onerror = () => btn.innerHTML = ICON.speak;
+        btn.innerHTML = ICON.stop;
+        synth.speak(u);
+      }}
+    </script>
+    """
+    components.html(html, height=34)
+
+
+def start_pending():
+    st.session_state.pending = True
+
+
+def apply_edit(conv, idx, new_text):
+    """Save the old text + everything after it as a 'version', then re-ask."""
+    msgs = conv["messages"]
+    m = msgs[idx]
+    m.setdefault("versions", []).append({
+        "content": m["content"],
+        "agent_text": m.get("agent_text", m["content"]),
+        "tail": msgs[idx + 1:],
+    })
+    m["content"] = new_text
+    m["agent_text"] = new_text
+    conv["messages"] = msgs[: idx + 1]
+    start_pending()
+
+
+def switch_version(conv, idx, v_idx):
+    """Swap the current branch with a stored version."""
+    msgs = conv["messages"]
+    m = msgs[idx]
+    current = {
+        "content": m["content"],
+        "agent_text": m.get("agent_text", m["content"]),
+        "tail": msgs[idx + 1:],
+    }
+    chosen = m["versions"][v_idx]
+    m["versions"][v_idx] = current
+    m["content"] = chosen["content"]
+    m["agent_text"] = chosen["agent_text"]
+    conv["messages"] = msgs[: idx + 1] + chosen["tail"]
+
+
+def branch_chat(conv, idx):
+    """Copy the chat up to this message into a brand-new conversation."""
+    new_id = new_conversation()
+    new_conv = st.session_state.conversations[new_id]
+    new_conv["title"] = "Branch · " + conv["title"]
+    new_conv["messages"] = [
+        dict(copy.deepcopy(m), id=str(uuid.uuid4()))
+        for m in conv["messages"][: idx + 1]
+    ]
+
+
+def render_actions(conv, idx, m):
+    is_user = m["role"] == "user"
+    mid = m["id"]
+
+    with st.container(key=f"act_{mid}"):
+
+        # ------------------ USER MESSAGE ACTIONS ------------------
+        if is_user:
+            has_versions = bool(m.get("versions"))
+            cols = st.columns([12, 2.2, 1, 1] if has_versions else [12, 2.2, 1])
+
+            with cols[1]:
+                client_actions(m["content"], ["copy", "share"], True)
+
+            with cols[2]:
+                if st.button("✎", key=f"edit_{mid}", help="Edit message"):
+                    st.session_state.editing = mid
+                    st.rerun()
+
+            if has_versions:
+                with cols[3]:
+                    with st.popover("⟲", help="See versions"):
+                        st.caption("Other versions of this message")
+                        options = [
+                            f"{n + 1}. " + (v["content"][:40] + ("…" if len(v["content"]) > 40 else ""))
+                            for n, v in enumerate(m["versions"])
+                        ]
+                        for n, label in enumerate(options):
+                            if st.button(label, key=f"ver_{mid}_{n}", use_container_width=True):
+                                switch_version(conv, idx, n)
+                                st.rerun()
+            return
+
+        # ---------------- ASSISTANT MESSAGE ACTIONS ----------------
+        cols = st.columns([0.9, 3.2, 1, 1, 1, 1, 9])
+
+        with cols[1]:
+            client_actions(m["content"], ["copy", "speak", "share"], False)
+
+        with cols[2]:
+            if st.button("👍", key=f"up_{mid}", help="Good response",
+                         type="primary" if m.get("feedback") == "up" else "secondary"):
+                m["feedback"] = None if m.get("feedback") == "up" else "up"
+                st.rerun()
+
+        with cols[3]:
+            if st.button("👎", key=f"down_{mid}", help="Bad response",
+                         type="primary" if m.get("feedback") == "down" else "secondary"):
+                m["feedback"] = None if m.get("feedback") == "down" else "down"
+                st.rerun()
+
+        with cols[4]:
+            if st.button("↻", key=f"retry_{mid}", help="Try again"):
+                conv["messages"] = conv["messages"][:idx]   # drop this reply
+                start_pending()
+                st.rerun()
+
+        with cols[5]:
+            with st.popover("⋯", help="More actions"):
+                t = m.get("time")
+                if t:
+                    st.caption(t.strftime("Today, %I:%M %p") if t.date() == datetime.now().date()
+                               else t.strftime("%b %d, %I:%M %p"))
+                if st.button("⑂  Branch in new chat", key=f"branch_{mid}", use_container_width=True):
+                    branch_chat(conv, idx)
+                    st.rerun()
+
+
+def ask_agent(conv):
+    """Send the whole visible conversation to the agent."""
+    history = [
+        {"role": m["role"], "content": m.get("agent_text", m["content"])}
+        for m in conv["messages"]
+        if not m.get("error")
+    ]
+    # A fresh thread_id per call, because the full history is sent each time.
+    # This keeps Try again / Edit from duplicating turns in the agent's memory.
+    result = agent.invoke(
+        {"messages": history},
+        config={"configurable": {"thread_id": str(uuid.uuid4())}},
+    )
+    return extract_clean_text(result) or "No response could be generated for this request."
+
 
 # ============================================================
 # DOCUMENT LIBRARY HELPERS
@@ -1966,6 +2224,10 @@ def render_documents_panel():
                 load_documents(force=True)
                 st.rerun()
 
+
+# ============================================================
+# SIDEBAR — CHATGPT STYLE
+# ============================================================
 
 with st.sidebar:
 
@@ -2169,7 +2431,7 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
- 
+
     # --------------------------------------------------------
     # DOCUMENTS (upload -> Neon vector DB -> chat answers)
     # --------------------------------------------------------
@@ -2311,7 +2573,7 @@ with st.sidebar:
         active_conv["messages"] = []
 
         st.rerun()
-        
+
 # ============================================================
 # MAIN HEADER
 # ============================================================
@@ -2332,8 +2594,13 @@ st.markdown(
 
 
 # ============================================================
-# CHAT HISTORY
+# CHAT HISTORY (with action bars)
 # ============================================================
+
+if "pending" not in st.session_state:
+    st.session_state.pending = False
+if "editing" not in st.session_state:
+    st.session_state.editing = None
 
 chat_container = st.container()
 
@@ -2350,11 +2617,56 @@ with chat_container:
             """,
             unsafe_allow_html=True,
         )
-    else:
-        history_html = "".join(
-            render_message_html(m["role"], m["content"]) for m in active_conv["messages"]
-        )
-        st.markdown(history_html, unsafe_allow_html=True)
+
+    for i, m in enumerate(active_conv["messages"]):
+
+        m.setdefault("id", str(uuid.uuid4()))   # also upgrades old messages
+
+        # ---- Editing a user message ----
+        if m["role"] == "user" and st.session_state.editing == m["id"]:
+            st.markdown('<div class="pearl-edit-note">Editing message</div>', unsafe_allow_html=True)
+            new_text = st.text_area(
+                "Edit message", value=m["content"], key=f"edit_box_{m['id']}",
+                label_visibility="collapsed",
+            )
+            c1, c2, _ = st.columns([1.3, 1, 6])
+            with c1:
+                if st.button("Save & send", key=f"save_{m['id']}", type="primary"):
+                    st.session_state.editing = None
+                    if new_text.strip():
+                        apply_edit(active_conv, i, new_text.strip())
+                    st.rerun()
+            with c2:
+                if st.button("Cancel", key=f"cancel_edit_{m['id']}"):
+                    st.session_state.editing = None
+                    st.rerun()
+            continue
+
+        st.markdown(render_message_html(m["role"], m["content"]), unsafe_allow_html=True)
+
+        if not m.get("error"):
+            render_actions(active_conv, i, m)
+
+    # ---- Answer a pending question (new message, edit, or Try again) ----
+    if st.session_state.pending:
+        thinking = st.empty()
+        thinking.markdown(render_thinking_html(), unsafe_allow_html=True)
+        try:
+            reply = ask_agent(active_conv)
+            notes = st.session_state.pop("upload_notes", "")
+            if notes:
+                reply = notes + "\n\n" + reply
+            active_conv["messages"].append({
+                "id": str(uuid.uuid4()), "role": "assistant",
+                "content": reply, "time": datetime.now(),
+            })
+        except Exception as e:
+            active_conv["messages"].append({
+                "id": str(uuid.uuid4()), "role": "assistant", "error": True,
+                "content": f"An unexpected error occurred: {e}", "time": datetime.now(),
+            })
+        st.session_state.pending = False
+        st.rerun()
 
 
 # ============================================================
@@ -2368,8 +2680,6 @@ chat_value = st.chat_input(
     accept_file="multiple",
     file_type=DOC_FILE_TYPES,
 )
-
-files_were_uploaded = False
 
 if chat_value:
 
@@ -2388,112 +2698,75 @@ if chat_value:
             file_lines = "\n".join(f"📎 {name}" for name in attached_names)
             user_display = f"{prompt}\n\n{file_lines}" if prompt else file_lines
 
-        active_conv["messages"].append({"role": "user", "content": user_display})
-
         # Auto-title this chat from its first message, like a history entry
         if active_conv["title"] in ("New chat", "", None):
             short_title = (prompt or attached_names[0]).replace("\n", " ")
             active_conv["title"] = (short_title[:40] + "…") if len(short_title) > 40 else short_title
 
-        with chat_container:
-            st.markdown(render_message_html("user", user_display), unsafe_allow_html=True)
+        # ----------------------------------------------
+        # 1) Save attached documents to Neon (vector DB)
+        # ----------------------------------------------
+        upload_notes, saved_names = [], []
 
-            thinking_placeholder = st.empty()
-
-            thinking_placeholder.markdown(render_thinking_html(), unsafe_allow_html=True)
-
+        for f in attached_files:
             try:
-
-                # ----------------------------------------------
-                # 1) Save attached documents to Neon (vector DB)
-                # ----------------------------------------------
-                upload_notes = []
-                saved_names = []
-
-                for f in attached_files:
-                    try:
-                        save_result = vector_store.add_document(
-                            filename=f.name,
-                            data=f.getvalue(),
-                            content_type=f.type,
-                        )
-                        saved_names.append(f.name)
-
-                        if save_result["status"] == "duplicate":
-                            upload_notes.append(f"ℹ️ **{f.name}** was already in your library.")
-                        else:
-                            upload_notes.append(
-                                f"✅ **{f.name}** saved ({save_result['chunk_count']} sections)."
-                            )
-                    except ValueError as exc:
-                        upload_notes.append(f"❌ **{f.name}**: {exc}")
-                    except Exception as exc:
-                        upload_notes.append(f"❌ **{f.name}**: upload failed - {exc}")
-
-                if attached_files:
-                    files_were_uploaded = True
-                    load_documents(force=True)
-
-                # ----------------------------------------------
-                # 2) Ask the agent (only if the user typed a question)
-                # ----------------------------------------------
-                bot_reply = ""
-
-                if prompt:
-                    agent_text = prompt
-                    if saved_names:
-                        agent_text += (
-                            "\n\n[The user just attached: "
-                            + ", ".join(saved_names)
-                            + ". They are now in the document library. "
-                            "Use search_documents to answer, and include the "
-                            "file name in your search query.]"
-                        )
-
-                    # Run the deep agent directly, in-process — no FastAPI
-                    # server involved. Each conversation keeps its own
-                    # thread_id (its UUID) so separate chats keep separate
-                    # agent memory instead of sharing one hardcoded thread.
-                    result = agent.invoke(
-                        {
-                            "messages": [
-                                {
-                                    "role": "user",
-                                    "content": agent_text,
-                                }
-                            ]
-                        },
-                        config={
-                            "configurable": {
-                                "thread_id": st.session_state.active_id,
-                            }
-                        },
-                    )
-
-                    bot_reply = extract_clean_text(result)
-
-                    if not bot_reply:
-                        bot_reply = "No response could be generated for this request."
-
-                elif saved_names:
-                    bot_reply = "You can now ask me questions about your document."
-
-                if upload_notes:
-                    bot_reply = "\n".join(upload_notes) + ("\n\n" + bot_reply if bot_reply else "")
-
-                thinking_placeholder.markdown(
-                    render_message_html("assistant", bot_reply), unsafe_allow_html=True
+                save_result = vector_store.add_document(
+                    filename=f.name,
+                    data=f.getvalue(),
+                    content_type=f.type,
                 )
-                active_conv["messages"].append({"role": "assistant", "content": bot_reply})
+                saved_names.append(f.name)
 
-            except Exception as e:
-                error_message = f"An unexpected error occurred: {str(e)}"
-                thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
-                active_conv["messages"].append({"role": "assistant", "content": error_message})
+                if save_result["status"] == "duplicate":
+                    upload_notes.append(f"ℹ️ **{f.name}** was already in your library.")
+                else:
+                    upload_notes.append(
+                        f"✅ **{f.name}** saved ({save_result['chunk_count']} sections)."
+                    )
+            except ValueError as exc:
+                upload_notes.append(f"❌ **{f.name}**: {exc}")
+            except Exception as exc:
+                upload_notes.append(f"❌ **{f.name}**: upload failed - {exc}")
 
-        # Refresh the sidebar document list after an upload
-        if files_were_uploaded:
-            st.rerun()
+        if attached_files:
+            load_documents(force=True)
+
+        # ----------------------------------------------
+        # 2) Text the agent sees (hidden hint about attachments)
+        # ----------------------------------------------
+        agent_text = prompt
+        if prompt and saved_names:
+            agent_text += (
+                "\n\n[The user just attached: "
+                + ", ".join(saved_names)
+                + ". They are now in the document library. "
+                "Use search_documents to answer, and include the "
+                "file name in your search query.]"
+            )
+
+        active_conv["messages"].append({
+            "id": str(uuid.uuid4()),
+            "role": "user",
+            "content": user_display,
+            "agent_text": agent_text or user_display,
+            "time": datetime.now(),
+        })
+
+        if prompt:
+            # The agent runs at the top of the next rerun
+            start_pending()
+            if upload_notes:
+                st.session_state.upload_notes = "\n".join(upload_notes)
+        else:
+            active_conv["messages"].append({
+                "id": str(uuid.uuid4()),
+                "role": "assistant",
+                "time": datetime.now(),
+                "content": "\n".join(upload_notes)
+                + "\n\nYou can now ask me questions about your document.",
+            })
+
+        st.rerun()
 
 st.markdown(
         """
