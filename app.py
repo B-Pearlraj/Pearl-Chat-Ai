@@ -7,6 +7,7 @@ import uuid
 import copy
 from datetime import datetime
 import os
+import time
 
 from main import agent
 import vector_store
@@ -2321,6 +2322,32 @@ def cb_branch(cid, idx):
     branch["replay"] = True
 
 
+# ---------- transient model errors (503 / 429 / overload) ----------
+
+MODEL_MAX_ATTEMPTS = 4
+MODEL_RETRY_BASE_DELAY = 2  # seconds; doubles each retry
+
+_TRANSIENT_MARKERS = (
+    "503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED",
+    "OVERLOADED", "HIGH DEMAND", "DEADLINE_EXCEEDED", "TIMEOUT", "TIMED OUT",
+)
+
+
+class ModelBusyError(Exception):
+    """Raised when the model is still unavailable after all retries."""
+
+
+def is_transient_model_error(exc) -> bool:
+    text = f"{type(exc).__name__}: {exc}".upper()
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
+
+
+def friendly_error_text(exc) -> str:
+    if isinstance(exc, ModelBusyError):
+        return str(exc)
+    return f"An unexpected error occurred: {str(exc)}"
+
+
 def run_agent_reply(conv, text, history):
     """Call the agent. After an edit / retry / branch the conversation has a
     fresh thread, so the earlier messages are replayed once as context."""
@@ -2342,14 +2369,33 @@ def run_agent_reply(conv, text, history):
 
     msgs.append({"role": "user", "content": text})
 
-    result = agent.invoke(
-        {"messages": msgs},
-        config={
-            "configurable": {
-                "thread_id": conv.get("thread_id") or st.session_state.active_id,
-            }
-        },
-    )
+    payload = {"messages": msgs}
+    run_config = {
+        "configurable": {
+            "thread_id": conv.get("thread_id") or st.session_state.active_id,
+        }
+    }
+
+    result = None
+    last_exc = None
+
+    for attempt in range(MODEL_MAX_ATTEMPTS):
+        try:
+            result = agent.invoke(payload, config=run_config)
+            last_exc = None
+            break
+        except Exception as exc:
+            if not is_transient_model_error(exc):
+                raise
+            last_exc = exc
+            if attempt < MODEL_MAX_ATTEMPTS - 1:
+                time.sleep(MODEL_RETRY_BASE_DELAY * (2 ** attempt))  # 2s, 4s, 8s
+
+    if last_exc is not None:
+        raise ModelBusyError(
+            "Pearl AI's model is very busy right now (high demand). "
+            "Please try again in a moment."
+        ) from last_exc
 
     reply = extract_clean_text(result)
     return reply or "No response could be generated for this request."
@@ -3072,7 +3118,7 @@ if pending_run and pending_run["conv"] == st.session_state.active_id:
                 active_conv, pending_run["text"], pending_run["history"]
             )
         except Exception as e:
-            bot_reply = f"An unexpected error occurred: {str(e)}"
+            bot_reply = friendly_error_text(e)
 
         active_conv["messages"].append(
             {"role": "assistant", "content": bot_reply, "time": datetime.now()}
@@ -3190,7 +3236,7 @@ if chat_value:
                 )
 
             except Exception as e:
-                error_message = f"An unexpected error occurred: {str(e)}"
+                error_message = friendly_error_text(e)
                 thinking_placeholder.markdown(render_error_html(error_message), unsafe_allow_html=True)
                 active_conv["messages"].append(
                     {"role": "assistant", "content": error_message, "time": datetime.now()}
