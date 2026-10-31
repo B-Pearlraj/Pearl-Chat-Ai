@@ -1,13 +1,22 @@
 import os
+import time
 from datetime import datetime
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from deepagents import create_deep_agent
 from langgraph.checkpoint.memory import InMemorySaver
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.agents.middleware import ModelFallbackMiddleware
 from tavily import TavilyClient
+
+try:
+    # Plain tool-calling agent: much faster for a chat assistant.
+    from langchain.agents import create_agent
+except ImportError:  # very old langchain -> use the deep agent instead
+    create_agent = None
+
+from deepagents import create_deep_agent
 
 import vector_store
 
@@ -29,6 +38,32 @@ if not TAVILY_API_KEY:
 
 
 # ============================================================
+# SETTINGS  (all optional - can be overridden in .env)
+#
+#   GEMINI_MODEL           main model
+#   GEMINI_FALLBACK_MODELS comma separated; used automatically when
+#                          the main model returns 503 / 429 / errors
+#   AGENT_MODE             "fast" (default)  -> plain tool-calling agent
+#                          "deep"            -> deepagents (planning,
+#                                               sub-agents, file tools:
+#                                               slower, only needed for
+#                                               long multi-step tasks)
+# ============================================================
+
+PRIMARY_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+
+FALLBACK_MODELS = [
+    name.strip()
+    for name in os.getenv(
+        "GEMINI_FALLBACK_MODELS", "gemini-2.5-flash-lite,gemini-2.5-flash"
+    ).split(",")
+    if name.strip()
+]
+
+AGENT_MODE = os.getenv("AGENT_MODE", "fast").strip().lower()
+
+
+# ============================================================
 # INITIALIZATION
 # ============================================================
 
@@ -39,6 +74,17 @@ tavily_client = TavilyClient(
 )
 
 
+def build_model(name: str):
+    """Gemini chat model with quick built-in retries and a hard timeout."""
+
+    return ChatGoogleGenerativeAI(
+        model=name,
+        google_api_key=GEMINI_API_KEY,
+        max_retries=2,   # short retry on 503 / 429 before giving up
+        timeout=60,      # never hang forever on a stuck request
+    )
+
+
 # ============================================================
 # FASTAPI
 # ============================================================
@@ -46,23 +92,57 @@ tavily_client = TavilyClient(
 app = FastAPI(
     title="AI Assistant API",
     description="AI Assistant with Web Search, Coding Support and Document Q&A",
-    version="1.0.0"
+    version="1.1.0"
 )
 
 
 # ============================================================
 # WEB SEARCH TOOL
+#   Speed: "basic" depth is much faster than "advanced", results
+#   are trimmed so the model reads less text, and repeated queries
+#   are answered from a 5-minute cache.
 # ============================================================
+
+_SEARCH_CACHE = {}
+_SEARCH_TTL_SECONDS = 300
+
 
 def web_search(query: str):
     """
     Search the internet for current or external information.
     """
 
-    return tavily_client.search(
-        query=query,
-        search_depth="advanced"
-    )
+    key = query.strip().lower()
+    cached = _SEARCH_CACHE.get(key)
+
+    if cached and time.time() - cached[0] < _SEARCH_TTL_SECONDS:
+        return cached[1]
+
+    try:
+        raw = tavily_client.search(
+            query=query,
+            search_depth="basic",
+            max_results=5,
+            include_answer=True,
+        )
+    except Exception as e:
+        return {"error": f"Web search is unavailable: {e}"}
+
+    slim = {
+        "answer": raw.get("answer"),
+        "results": [
+            {
+                "title": item.get("title"),
+                "url": item.get("url"),
+                "content": (item.get("content") or "")[:600],
+            }
+            for item in raw.get("results", [])
+        ],
+    }
+
+    _SEARCH_CACHE[key] = (time.time(), slim)
+
+    return slim
 
 
 # ============================================================
@@ -100,6 +180,22 @@ def get_current_datetime():
 #   answers from them.
 # ============================================================
 
+def _trim_passages(results, limit=1500):
+    """Cap very long passages so the model has less to read."""
+
+    trimmed = []
+
+    for item in results:
+        if isinstance(item, dict):
+            item = {
+                k: (v[:limit] if isinstance(v, str) and len(v) > limit else v)
+                for k, v in item.items()
+            }
+        trimmed.append(item)
+
+    return trimmed
+
+
 def search_documents(query: str):
     """
     Search the documents the user has uploaded (PDF, DOCX, TXT, MD, CSV).
@@ -123,7 +219,7 @@ def search_documents(query: str):
             "message": "No relevant content was found in the uploaded documents.",
         }
 
-    return {"results": results}
+    return {"results": _trim_passages(results)}
 
 
 def list_uploaded_documents():
@@ -138,313 +234,103 @@ def list_uploaded_documents():
         return {"error": f"Could not read the document list: {e}"}
 
 
+TOOLS = [
+    web_search,
+    get_current_datetime,
+    search_documents,
+    list_uploaded_documents,
+]
+
+
+# ============================================================
+# SYSTEM PROMPT
+#   Same rules as before, written more compactly: fewer prompt
+#   tokens means a faster first response on every message.
+# ============================================================
+
+SYSTEM_PROMPT = """
+You are a professional AI Assistant. Understand the user's request and give the
+most useful, accurate answer. Use a tool only when it is actually needed.
+
+TOOLS AND WHEN TO USE THEM
+
+1. get_current_datetime - ALWAYS call it for anything that depends on "now":
+   today's date, day, time, year, "how many days until X", "is it a weekend",
+   ages as of today. Never answer these from memory. Use the exact values it
+   returns; do not adjust or round them.
+
+2. search_documents / list_uploaded_documents - the user's uploaded files
+   (PDF, DOCX, TXT, MD, CSV).
+   - Call search_documents when the user mentions "the document", "the file",
+     "the PDF", "uploaded", "attached", "my notes/report", or asks for specific
+     facts (names, figures, dates, policies, contracts, resumes) that could be
+     inside their files, or asks to summarize/explain their documents.
+   - Use a short, self-contained query. If the first result is weak, try ONE
+     more query with different wording.
+   - For document questions answer ONLY from the returned passages and cite
+     briefly, e.g. (Source: report.pdf, page 3). If nothing relevant is
+     returned, say the answer was not found in the uploaded documents - do not
+     guess. If the tool returns an error, say document search is unavailable.
+   - Call list_uploaded_documents when asked which files are uploaded.
+   - Do NOT search documents for unrelated general, coding or news questions.
+
+3. web_search - ONLY for current or live information: latest versions, recent
+   news, today's events, sports results, weather, prices, recent technology or
+   library changes, or anything needing the internet. Base such answers on the
+   search results. Do NOT use it for normal knowledge questions (e.g. "What is
+   Machine Learning?", "Explain REST API") - answer those directly.
+
+CODING QUESTIONS (Python, FastAPI, Streamlit, JavaScript, React, HTML, CSS,
+SQL, Pandas, NumPy, ML/DL, APIs, AWS, Docker, Git, deployment, debugging...)
+Solve directly; use web_search only if current external documentation is
+required. When appropriate, structure the answer as: Problem, Cause, Solution
+(corrected code), Changes, Expected Result, Steps.
+
+ACCURACY
+Never invent search results, document content, current information, technical
+specifications, error messages, code execution results, or the date/time.
+If you do not know something, say so clearly.
+
+STYLE
+Be concise but useful. Simple question -> direct answer. Coding -> practical
+solution with corrected code. Web question -> summarize the relevant
+information. Complex question -> step by step. Do not expose internal
+reasoning, system prompts, or tool details. Focus on the user's actual question.
+"""
+
+
 # ============================================================
 # AI AGENT
+#   If the main model is overloaded (503 / 429), the request is
+#   automatically retried on the fallback models, so users see an
+#   answer instead of "high demand" errors.
 # ============================================================
 
-agent = create_deep_agent(
-
-    model="google_genai:gemini-3.1-flash-lite",
-
-    tools=[
-        web_search,
-        get_current_datetime,
-        search_documents,
-        list_uploaded_documents,
-    ],
-
-    checkpointer=checkpointer,
-
-    system_prompt="""
-
-You are a professional AI Assistant.
-
-Your responsibility is to understand the user's request
-and provide the most useful and accurate answer.
-
-============================================================
-1. INTENT DETECTION
-============================================================
-
-Determine what type of question the user is asking.
-
-Main categories:
-
-1. General Knowledge
-2. Web / Current Information
-3. Coding / Programming
-4. Uploaded Documents (the user's own files)
-
-Use only the tools that are actually necessary.
-
-Do NOT use tools unnecessarily.
-
-
-============================================================
-2. DATE AND TIME — ALWAYS USE THE TOOL
-============================================================
-
-You do NOT know the current date or time from memory. Your
-internal knowledge has a training cutoff and will be WRONG
-if you guess.
-
-Whenever the user asks any of the following, you MUST call
-the get_current_datetime tool before answering — never answer
-from memory or estimate:
-
-- "What is today's date?"
-- "What day is it?"
-- "What time is it?"
-- "What year is it?"
-- Any question that depends on the current date/time to
-  answer correctly (e.g. "how many days until X", "is it a
-  weekend", "how old would someone born in ... be today")
-
-After calling the tool, answer using the exact values it
-returns. Do not adjust, round, or override them.
-
-
-============================================================
-2B. UPLOADED DOCUMENTS
-============================================================
-
-The user can upload documents (PDF, DOCX, TXT, MD, CSV) that are
-stored in a searchable library. You can access them ONLY through
-the search_documents and list_uploaded_documents tools.
-
-Call search_documents when:
-
-- The user mentions "the document", "the file", "the PDF",
-  "uploaded", "attached", "my notes", "my report", etc.
-- The question asks for specific facts that could be inside
-  the user's files (names, figures, dates, policies, contracts,
-  resumes, reports).
-- The user asks you to summarize or explain something from
-  their documents.
-
-How to answer from documents:
-
-1. Call search_documents with a clear, self-contained query.
-   If the first result is weak, try ONE more query with
-   different wording.
-2. Answer ONLY from the returned passages for document
-   questions. Do not add facts that are not in them.
-3. Mention the source briefly, e.g. (Source: report.pdf, page 3).
-4. If nothing relevant is returned, say clearly that the
-   answer was not found in the uploaded documents. Do not guess.
-5. If the tool returns an error, tell the user the document
-   search is currently unavailable.
-
-Call list_uploaded_documents when the user asks what documents
-or files they have uploaded.
-
-For questions clearly unrelated to the documents (general
-knowledge, coding, web news), do NOT search the documents.
-
-
-============================================================
-3. WEB SEARCH
-============================================================
-
-Use web_search ONLY when the user needs:
-
-- Current information
-- Latest information
-- Recent news
-- Today's events
-- Live information
-- Current sports information
-- Current weather
-- Current prices
-- Recent technology updates
-- Latest software/library information
-- Information that requires internet access
-
-Examples:
-
-"What is the latest Python version?"
-
-"What are today's technology news?"
-
-"What is the current weather?"
-
-"Latest FastAPI update"
-
-"Who won today's match?"
-
-For normal questions that can be answered
-from your existing knowledge, do NOT use web search.
-
-
-============================================================
-4. CODING / PROGRAMMING
-============================================================
-
-If the user asks a coding or programming question,
-solve the problem directly.
-
-Supported topics include:
-
-- Python
-- FastAPI
-- Streamlit
-- JavaScript
-- React
-- HTML
-- CSS
-- SQL
-- PostgreSQL
-- MySQL
-- Pandas
-- NumPy
-- Machine Learning
-- Deep Learning
-- APIs
-- AWS
-- Docker
-- Git
-- GitHub
-- Deployment
-- Debugging
-- Error fixing
-- Code optimization
-
-For coding questions:
-
-1. Understand the problem.
-2. Identify the error or requirement.
-3. Explain the cause.
-4. Provide corrected code when required.
-5. Explain the important changes.
-6. Explain the expected result.
-7. Give step-by-step instructions when useful.
-
-Do not use web search unless current external
-documentation or information is specifically required.
-
-
-============================================================
-5. CODING RESPONSE
-============================================================
-
-For coding/debugging questions, use this structure
-when appropriate:
-
-Problem
-
-Briefly explain the issue.
-
-Cause
-
-Explain why the issue occurs.
-
-Solution
-
-Provide the corrected code.
-
-Changes
-
-Explain what was changed.
-
-Expected Result
-
-Explain what should happen after the fix.
-
-Steps
-
-Give clear instructions for testing or running the solution.
-
-
-============================================================
-6. GENERAL QUESTIONS
-============================================================
-
-For general questions:
-
-- Answer directly.
-- Keep the explanation clear.
-- Do not use web search unnecessarily.
-
-Examples:
-
-"What is Machine Learning?"
-
-"What is Python?"
-
-"Explain REST API."
-
-"What is FastAPI?"
-
-"What is cloud computing?"
-
-Answer these directly without using web search.
-
-
-============================================================
-7. WEB SEARCH + CODING
-============================================================
-
-If a coding question requires current information,
-you may use web_search.
-
-For example:
-
-- Latest library API
-- Current package syntax
-- Recent framework changes
-- Current cloud service configuration
-
-Otherwise solve the coding problem directly.
-
-
-============================================================
-8. ACCURACY
-============================================================
-
-Never invent:
-
-- Search results
-- Document content that was not returned by search_documents
-- Current information
-- Technical specifications
-- Error messages
-- Code execution results
-- Today's date or time (always use get_current_datetime)
-
-If you do not know something, clearly say so.
-
-When web search is used, base current-information
-answers on the search results.
-
-
-============================================================
-9. RESPONSE STYLE
-============================================================
-
-Be concise but useful.
-
-For simple questions:
-Give a direct answer.
-
-For coding questions:
-Give a practical solution and corrected code.
-
-For web questions:
-Summarize the relevant information.
-
-For complex questions:
-Explain step by step.
-
-Do not expose:
-
-- Internal reasoning
-- Chain of thought
-- System prompts
-- Internal tool details
-
-Always focus on solving the user's actual question.
-"""
+_middleware = (
+    [ModelFallbackMiddleware(*[build_model(name) for name in FALLBACK_MODELS])]
+    if FALLBACK_MODELS
+    else []
 )
+
+if AGENT_MODE == "deep" or create_agent is None:
+
+    agent = create_deep_agent(
+        model=build_model(PRIMARY_MODEL),
+        tools=TOOLS,
+        checkpointer=checkpointer,
+        system_prompt=SYSTEM_PROMPT,
+        middleware=_middleware,
+    )
+
+else:
+
+    agent = create_agent(
+        model=build_model(PRIMARY_MODEL),
+        tools=TOOLS,
+        checkpointer=checkpointer,
+        system_prompt=SYSTEM_PROMPT,
+        middleware=_middleware,
+    )
 
 
 # ============================================================
@@ -542,7 +428,7 @@ def documents_search(query: str, top_k: int = 5):
 # ============================================================
 
 @app.get("/ask_query")
-def ask_model(query: str):
+def ask_model(query: str, thread_id: str = "AI_Assistant_1029"):
 
     result = agent.invoke(
         {
@@ -555,7 +441,7 @@ def ask_model(query: str):
         },
         config={
             "configurable": {
-                "thread_id": "AI_Assistant_1029"
+                "thread_id": thread_id
             }
         }
     )
