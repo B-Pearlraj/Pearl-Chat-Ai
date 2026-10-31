@@ -55,12 +55,58 @@ PRIMARY_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 FALLBACK_MODELS = [
     name.strip()
     for name in os.getenv(
-        "GEMINI_FALLBACK_MODELS", "gemini-2.5-flash-lite,gemini-2.5-flash"
+        "GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite,gemini-3.8-flash"
     ).split(",")
     if name.strip()
 ]
 
 AGENT_MODE = os.getenv("AGENT_MODE", "fast").strip().lower()
+
+
+def _available_gemini_models():
+    """Model ids this API key can really use, or None if the check fails."""
+
+    try:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(
+            api_key=GEMINI_API_KEY,
+            http_options=types.HttpOptions(timeout=10_000),  # 10 s max
+        )
+        return {m.name.replace("models/", "") for m in client.models.list()}
+
+    except Exception as e:
+        print(f"[startup] Could not check the Gemini model list ({e}); "
+              "using the configured models as they are.")
+        return None
+
+
+def _usable_fallbacks(names):
+    """Drop retired / unavailable models so a dead fallback never breaks a reply."""
+
+    available = _available_gemini_models()
+
+    if available is None:
+        return [n for n in names if n != PRIMARY_MODEL]
+
+    if PRIMARY_MODEL not in available:
+        print(f"[startup] WARNING: GEMINI_MODEL '{PRIMARY_MODEL}' is not "
+              "available for this API key. Change GEMINI_MODEL.")
+
+    usable = []
+    for n in names:
+        if n == PRIMARY_MODEL:
+            continue
+        if n in available:
+            usable.append(n)
+        else:
+            print(f"[startup] Skipping fallback model '{n}': not available "
+                  "for this API key (retired or no access).")
+    return usable
+
+
+FALLBACK_MODELS = _usable_fallbacks(FALLBACK_MODELS)
 
 
 # ============================================================
