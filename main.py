@@ -1,13 +1,15 @@
 import os
 from datetime import datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from deepagents import create_deep_agent
 from langgraph.checkpoint.memory import InMemorySaver
 from tavily import TavilyClient
+
+import vector_store
 
 
 # ============================================================
@@ -43,7 +45,7 @@ tavily_client = TavilyClient(
 
 app = FastAPI(
     title="AI Assistant API",
-    description="AI Assistant with Web Search and Coding Support",
+    description="AI Assistant with Web Search, Coding Support and Document Q&A",
     version="1.0.0"
 )
 
@@ -92,6 +94,51 @@ def get_current_datetime():
 
 
 # ============================================================
+# DOCUMENT TOOLS (RAG)
+#   Documents are stored in Neon (pgvector). The agent calls
+#   search_documents to fetch the most relevant passages and
+#   answers from them.
+# ============================================================
+
+def search_documents(query: str):
+    """
+    Search the documents the user has uploaded (PDF, DOCX, TXT, MD, CSV).
+    Call this whenever the question may be answered by an uploaded
+    document, or when the user mentions "the document", "the file",
+    "the PDF", "uploaded", "attached", or asks about specific content
+    that could be in their files.
+    Pass a short, self-contained search query (rewrite the user's
+    question so it makes sense without the chat history).
+    Returns the most relevant passages with filename and page number.
+    """
+
+    try:
+        results = vector_store.search(query, top_k=5)
+    except Exception as e:
+        return {"error": f"Document search is unavailable: {e}"}
+
+    if not results:
+        return {
+            "results": [],
+            "message": "No relevant content was found in the uploaded documents.",
+        }
+
+    return {"results": results}
+
+
+def list_uploaded_documents():
+    """
+    List the documents that are currently uploaded and searchable.
+    Call this when the user asks which documents/files they have uploaded.
+    """
+
+    try:
+        return {"documents": vector_store.list_documents()}
+    except Exception as e:
+        return {"error": f"Could not read the document list: {e}"}
+
+
+# ============================================================
 # AI AGENT
 # ============================================================
 
@@ -102,6 +149,8 @@ agent = create_deep_agent(
     tools=[
         web_search,
         get_current_datetime,
+        search_documents,
+        list_uploaded_documents,
     ],
 
     checkpointer=checkpointer,
@@ -124,6 +173,7 @@ Main categories:
 1. General Knowledge
 2. Web / Current Information
 3. Coding / Programming
+4. Uploaded Documents (the user's own files)
 
 Use only the tools that are actually necessary.
 
@@ -152,6 +202,44 @@ from memory or estimate:
 
 After calling the tool, answer using the exact values it
 returns. Do not adjust, round, or override them.
+
+
+============================================================
+2B. UPLOADED DOCUMENTS
+============================================================
+
+The user can upload documents (PDF, DOCX, TXT, MD, CSV) that are
+stored in a searchable library. You can access them ONLY through
+the search_documents and list_uploaded_documents tools.
+
+Call search_documents when:
+
+- The user mentions "the document", "the file", "the PDF",
+  "uploaded", "attached", "my notes", "my report", etc.
+- The question asks for specific facts that could be inside
+  the user's files (names, figures, dates, policies, contracts,
+  resumes, reports).
+- The user asks you to summarize or explain something from
+  their documents.
+
+How to answer from documents:
+
+1. Call search_documents with a clear, self-contained query.
+   If the first result is weak, try ONE more query with
+   different wording.
+2. Answer ONLY from the returned passages for document
+   questions. Do not add facts that are not in them.
+3. Mention the source briefly, e.g. (Source: report.pdf, page 3).
+4. If nothing relevant is returned, say clearly that the
+   answer was not found in the uploaded documents. Do not guess.
+5. If the tool returns an error, tell the user the document
+   search is currently unavailable.
+
+Call list_uploaded_documents when the user asks what documents
+or files they have uploaded.
+
+For questions clearly unrelated to the documents (general
+knowledge, coding, web news), do NOT search the documents.
 
 
 ============================================================
@@ -316,6 +404,7 @@ Otherwise solve the coding problem directly.
 Never invent:
 
 - Search results
+- Document content that was not returned by search_documents
 - Current information
 - Technical specifications
 - Error messages
@@ -390,6 +479,62 @@ def web_search_endpoint(query: str):
 def current_datetime_endpoint():
 
     return get_current_datetime()
+
+
+# ============================================================
+# DOCUMENT ENDPOINTS
+#   Upload  -> extract text, chunk, embed, store in Neon
+#   List    -> documents currently stored
+#   Delete  -> remove a document and its vectors
+#   Search  -> raw semantic search (useful for testing)
+# ============================================================
+
+@app.post("/documents/upload")
+def upload_document(file: UploadFile = File(...)):
+
+    try:
+        data = file.file.read()
+        return vector_store.add_document(
+            filename=file.filename or "document",
+            data=data,
+            content_type=file.content_type,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+
+
+@app.get("/documents")
+def documents_list():
+
+    try:
+        return {"documents": vector_store.list_documents()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/documents/{doc_id}")
+def documents_delete(doc_id: int):
+
+    try:
+        deleted = vector_store.delete_document(doc_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    return {"deleted": doc_id}
+
+
+@app.get("/documents/search")
+def documents_search(query: str, top_k: int = 5):
+
+    try:
+        return {"results": vector_store.search(query, top_k=top_k)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================
