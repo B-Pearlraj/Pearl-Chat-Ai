@@ -15,3 +15,7 @@ requests
 httpx
 pydantic
 typing-extensions
+psycopg2-binary
+pypdf
+python-docx
+python-multipart
