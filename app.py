@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 import os
 
-from main import agent
+from main import agent, search_session_documents
 import vector_store
 
 # ============================================================
@@ -2158,6 +2158,11 @@ if "doc_flash" not in st.session_state:
 if "doc_list_cache" not in st.session_state:
     st.session_state.doc_list_cache = None
 
+# Files THIS visitor uploaded. Only these are searched for this visitor,
+# and the library is never listed, so nobody sees anyone else's documents.
+if "session_docs" not in st.session_state:
+    st.session_state.session_docs = []
+
 
 def load_documents(force=False):
     """Read the document list from Neon once, then reuse it until it changes."""
@@ -2202,9 +2207,12 @@ def ingest_files(files):
                     data=f.getvalue(),
                     content_type=f.type,
                 )
+            if f.name not in st.session_state.session_docs:
+                st.session_state.session_docs.append(f.name)
+
             if result["status"] == "duplicate":
                 results.append(
-                    {"name": f.name, "state": "warn", "note": "Already uploaded"}
+                    {"name": f.name, "state": "warn", "note": "Already in knowledge base"}
                 )
             else:
                 results.append(
@@ -2221,15 +2229,12 @@ def ingest_files(files):
                 {"name": f.name, "state": "err", "note": f"Upload failed - {exc}"}
             )
 
-    if results:
-        load_documents(force=True)
-
     return results
 
 
-def render_documents_panel():
+def render_legacy_uploader():
+    """Only used on old Streamlit (< 1.43) that has no + button in the chat box."""
 
-    # Messages from the last delete / legacy upload (shown after the rerun)
     for kind, text in st.session_state.doc_flash:
         if kind == "success":
             st.success(text)
@@ -2239,73 +2244,24 @@ def render_documents_panel():
             st.error(text)
     st.session_state.doc_flash = []
 
-    if CHAT_FILE_SUPPORT:
-        st.caption(
-            "Add files with the + button in the message box "
-            "(PDF, DOCX, TXT, MD or CSV). Pearl answers from them."
-        )
-    else:
-        # Fallback for old Streamlit versions: classic sidebar uploader
-        st.caption(
-            "Upload PDF, DOCX, TXT, MD or CSV. Pearl will answer questions "
-            "from these documents. (Upgrade Streamlit to 1.43+ to attach "
-            "files from the chat box with a + button.)"
-        )
+    uploaded_files = st.file_uploader(
+        "Choose documents",
+        type=ALLOWED_DOC_TYPES,
+        accept_multiple_files=True,
+        key=f"doc_uploader_{st.session_state.doc_uploader_key}",
+        label_visibility="collapsed",
+    )
 
-        uploaded_files = st.file_uploader(
-            "Choose documents",
-            type=ALLOWED_DOC_TYPES,
-            accept_multiple_files=True,
-            key=f"doc_uploader_{st.session_state.doc_uploader_key}",
-            label_visibility="collapsed",
-        )
-
-        if uploaded_files and st.button(
-            "💾  Save to knowledge base",
-            key="doc_save_btn",
-            use_container_width=True,
-        ):
-            flash = []
-            for r in ingest_files(uploaded_files):
-                kind = {"ok": "success", "warn": "warning"}.get(r["state"], "error")
-                flash.append((kind, f"{r['name']}: {r['note']}"))
-            st.session_state.doc_flash = flash
-            st.session_state.doc_uploader_key += 1  # clears the uploader
-            st.rerun()
-
-    st.markdown("**Your documents**")
-
-    cache = load_documents()
-
-    if cache["error"]:
-        st.error(f"Document library unavailable: {cache['error']}")
-        return
-
-    if not cache["docs"]:
-        st.caption("No documents uploaded yet.")
-        return
-
-    for doc in cache["docs"]:
-        col_name, col_del = st.columns([5, 1])
-        with col_name:
-            details = " · ".join(
-                x for x in [
-                    f"{doc['page_count']} pages" if doc.get("page_count") else "",
-                    format_size(doc.get("file_size")),
-                ] if x
-            )
-            st.markdown(f"📄 {doc['filename']}")
-            if details:
-                st.caption(details)
-        with col_del:
-            if st.button("🗑", key=f"doc_del_{doc['id']}", help="Delete this document"):
-                try:
-                    vector_store.delete_document(doc["id"])
-                    st.session_state.doc_flash = [("success", f"{doc['filename']} deleted.")]
-                except Exception as exc:
-                    st.session_state.doc_flash = [("error", f"Delete failed: {exc}")]
-                load_documents(force=True)
-                st.rerun()
+    if uploaded_files and st.button(
+        "💾  Add to this chat", key="doc_save_btn", use_container_width=True
+    ):
+        flash = []
+        for r in ingest_files(uploaded_files):
+            kind = {"ok": "success", "warn": "warning"}.get(r["state"], "error")
+            flash.append((kind, f"{r['name']}: {r['note']}"))
+        st.session_state.doc_flash = flash
+        st.session_state.doc_uploader_key += 1
+        st.rerun()
 
 
 with st.sidebar:
@@ -2488,10 +2444,11 @@ with st.sidebar:
     # DOCUMENTS (upload -> Neon vector DB -> chat answers)
     # --------------------------------------------------------
 
-    with st.expander("📄  Documents", expanded=False):
-        # Filled in further down, once any file attached in the chat box
-        # has been processed, so the list is never out of date.
-        docs_slot = st.container()
+    # Documents are attached from the + button in the message box and are
+    # private to this visitor, so there is no shared document list here.
+    if not CHAT_FILE_SUPPORT:
+        with st.expander("📎  Attach files", expanded=False):
+            render_legacy_uploader()
 
     # --------------------------------------------------------
     # CAPABILITIES
@@ -2703,6 +2660,13 @@ def friendly_error(exc):
             "returned a temporary high-demand error, even after several "
             "retries). Please send your message again in a few seconds."
         )
+    text = str(exc).upper()
+    if "NOT_FOUND" in text and "MODEL" in text:
+        return (
+            "The configured Gemini model is not available for this API key "
+            "(it may have been retired). Update GEMINI_MODEL or "
+            "GEMINI_FALLBACK_MODELS in your environment settings."
+        )
     return f"An unexpected error occurred: {str(exc)}"
 
 
@@ -2778,9 +2742,11 @@ def _run_streaming(payload, config, on_text, on_status):
     return reply or buffer
 
 
-def run_agent(prompt, thread_id, on_text, on_status):
+def run_agent(prompt, thread_id, on_text, on_status, allowed_docs=None):
     payload = {"messages": [{"role": "user", "content": prompt}]}
     config = {"configurable": {"thread_id": thread_id}}
+    if allowed_docs is not None:
+        config["configurable"]["allowed_docs"] = list(allowed_docs)
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
@@ -2797,6 +2763,55 @@ def run_agent(prompt, thread_id, on_text, on_status):
                 f"(attempt {attempt + 1} of {MAX_ATTEMPTS})&hellip;"
             )
             time.sleep(wait)
+
+
+# ============================================================
+# DOCUMENTS FIRST
+#   When the visitor has uploaded files, the best matching passages are
+#   fetched here, before the model is called, and handed to it with the
+#   question. The model answers from them instead of going to the web,
+#   and it needs one model call instead of two (no separate tool step).
+# ============================================================
+
+def build_agent_prompt(prompt):
+    docs = list(st.session_state.session_docs)
+
+    if not docs:
+        return prompt
+
+    names = ", ".join(docs)
+
+    try:
+        passages = search_session_documents(prompt, docs, top_k=5)
+    except Exception:
+        passages = []
+
+    if not passages:
+        return (
+            f"[DOCUMENT CONTEXT] The user uploaded these documents in this chat: "
+            f"{names}. No relevant passage was found for the question below. "
+            f"If the question is about their documents, say it was not found in "
+            f"them; otherwise answer normally.\n[END DOCUMENT CONTEXT]\n\n"
+            f"User question: {prompt}"
+        )
+
+    blocks = []
+    for i, passage in enumerate(passages, 1):
+        text = passage if isinstance(passage, str) else json.dumps(
+            passage, ensure_ascii=False, default=str
+        )
+        blocks.append(f"Passage {i}: {text[:900]}")
+
+    return (
+        f"[DOCUMENT CONTEXT] Passages retrieved from the user's uploaded "
+        f"documents ({names}). Answer from them when they contain the answer "
+        f"and cite (Source: file, page). Do not use web_search for this "
+        f"question unless the user explicitly asks for web or current "
+        f"information. If the passages do not contain the answer, say it was "
+        f"not found in the uploaded documents.\n"
+        + "\n".join(blocks)
+        + f"\n[END DOCUMENT CONTEXT]\n\nUser question: {prompt}"
+    )
 
 
 # ============================================================
@@ -2822,8 +2837,6 @@ if submission:
     else:
         prompt = (getattr(submission, "text", "") or "").strip()
         attached_files = list(getattr(submission, "files", []) or [])
-
-docs_rendered = False
 
 if prompt or attached_files:
 
@@ -2855,11 +2868,6 @@ if prompt or attached_files:
         user_placeholder.markdown(
             render_message_html("user", prompt, file_results), unsafe_allow_html=True
         )
-
-        # Refresh the sidebar document list now that new files are saved
-        with docs_slot:
-            render_documents_panel()
-        docs_rendered = True
 
         thinking_placeholder = st.empty()
 
@@ -2901,11 +2909,15 @@ if prompt or attached_files:
 
                 # Runs the deep agent in-process (no FastAPI). Each chat keeps
                 # its own thread_id so separate chats keep separate memory.
+                if st.session_state.session_docs:
+                    paint_status("Searching your documents&hellip;")
+
                 bot_reply = run_agent(
-                    prompt,
+                    build_agent_prompt(prompt),
                     st.session_state.active_id,
                     on_text=paint_text,
                     on_status=paint_status,
+                    allowed_docs=st.session_state.session_docs,
                 )
 
                 if not bot_reply:
@@ -2925,11 +2937,6 @@ if prompt or attached_files:
 
     # Redraw once so the sidebar chat title updates right after the first message
     st.rerun()
-
-# No new submission this run: just draw the document list
-if not docs_rendered:
-    with docs_slot:
-        render_documents_panel()
 
 st.markdown(
         """
