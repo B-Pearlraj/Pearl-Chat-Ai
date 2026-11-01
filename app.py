@@ -2039,13 +2039,13 @@ section[data-testid="stSidebar"] [class*="st-key-menu_chat_"] button:hover{
   margin:14px 0 2px 0;
 }
 
-[class*="st-key-actbar_asst_"]{ padding-left:46px; }
-[class*="st-key-actbar_user_"]{ padding-right:46px; }
+[class*="st-key-actbar_asst_"]{ padding-left:40px; margin-top:2px; }
+[class*="st-key-actbar_user_"]{ padding-right:0; margin-top:2px; }
 
 /* keep every icon on ONE line, sized to its content (also on phones) */
 [class*="st-key-actbar_"] [data-testid="stHorizontalBlock"]{
   flex-wrap:nowrap !important;
-  gap:2px !important;
+  gap:0 !important;
   align-items:center !important;
 }
 
@@ -2099,7 +2099,7 @@ section[data-testid="stSidebar"] [class*="st-key-menu_chat_"] button:hover{
 }
 
 /* popover triggers: hide the little drop-down arrow if present */
-[class*="st-key-actbar_"] button [data-testid="stIconMaterial"]:nth-of-type(n+2){
+[data-testid="stPopoverButton"] > * > [aria-hidden="true"]:not(:first-child){
   display:none !important;
 }
 
@@ -2355,9 +2355,9 @@ ACTION_IFRAME_TEMPLATE = r"""<!doctype html>
 <meta charset="utf-8">
 <style>
   html, body { margin:0; padding:0; background:transparent; overflow:hidden; }
-  body { display:flex; align-items:center; gap:2px; height:36px; }
+  body { display:flex; align-items:center; justify-content:flex-start; gap:0; height:36px; }
   button {
-    width:32px; height:32px; border:0; border-radius:8px; padding:0;
+    width:34px; height:32px; border:0; border-radius:8px; padding:0;
     background:transparent; color:#9CA8C7; cursor:pointer;
     display:flex; align-items:center; justify-content:center;
     transition:background .15s ease, color .15s ease;
@@ -2561,7 +2561,7 @@ def action_iframe(uid, text, buttons, labels):
         .replace("__CFG__", cfg_json)
     )
 
-    width = 34 * len(buttons) + 4
+    width = 34 * len(buttons)
 
     # Newer Streamlit replaced components.html with st.iframe
     if hasattr(st, "iframe"):
