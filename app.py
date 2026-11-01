@@ -9,7 +9,15 @@ import time
 from datetime import datetime
 import os
 
-from main import agent, search_session_documents
+import copy
+import streamlit.components.v1 as components
+
+from main import (
+    agent,
+    search_session_documents,
+    build_history_messages,
+    save_feedback,
+)
 import vector_store
 
 # ============================================================
@@ -2015,6 +2023,143 @@ section[data-testid="stSidebar"] [class*="st-key-menu_chat_"] button:hover{
   word-break:break-word;
 }
 
+
+/* ============================================================
+   MESSAGE ACTION BARS
+   (copy / share / edit / versions / rate / read aloud /
+    try again / more -> branch in new chat)
+   ============================================================ */
+
+/* each message = bubble + its action bar, kept close together */
+[class*="st-key-msgwrap_"]{
+  gap:0 !important;
+}
+
+[class*="st-key-msgwrap_"] .pearl-row{
+  margin:14px 0 2px 0;
+}
+
+[class*="st-key-actbar_asst_"]{ padding-left:46px; }
+[class*="st-key-actbar_user_"]{ padding-right:46px; }
+
+/* keep every icon on ONE line, sized to its content (also on phones) */
+[class*="st-key-actbar_"] [data-testid="stHorizontalBlock"]{
+  flex-wrap:nowrap !important;
+  gap:2px !important;
+  align-items:center !important;
+}
+
+[class*="st-key-actbar_user_"] [data-testid="stHorizontalBlock"]{
+  justify-content:flex-end !important;
+}
+
+[class*="st-key-actbar_asst_"] [data-testid="stHorizontalBlock"]{
+  justify-content:flex-start !important;
+}
+
+[class*="st-key-actbar_"] [data-testid="stColumn"],
+[class*="st-key-actbar_"] [data-testid="column"]{
+  flex:0 0 auto !important;
+  width:auto !important;
+  min-width:0 !important;
+}
+
+/* flat icon buttons */
+[class*="st-key-actbar_"] button{
+  background:transparent !important;
+  border:none !important;
+  box-shadow:none !important;
+  color:#9CA8C7 !important;
+  width:34px !important;
+  min-width:34px !important;
+  height:32px !important;
+  min-height:32px !important;
+  padding:0 !important;
+  border-radius:8px !important;
+}
+
+[class*="st-key-actbar_"] button:hover:not(:disabled){
+  background:rgba(148,163,184,0.16) !important;
+  color:#F1F5F9 !important;
+}
+
+[class*="st-key-actbar_"] button:disabled{
+  opacity:0.35 !important;
+}
+
+/* an active rating (thumbs up / down) */
+[class*="st-key-actbar_"] button[data-testid="stBaseButton-primary"]{
+  color:#A5B4FC !important;
+  background:rgba(99,102,241,0.20) !important;
+}
+
+/* icon-only buttons: hide the (empty) text label */
+[class*="st-key-actbar_"] button [data-testid="stMarkdownContainer"]{
+  display:none !important;
+}
+
+/* popover triggers: hide the little drop-down arrow if present */
+[class*="st-key-actbar_"] button [data-testid="stIconMaterial"]:nth-of-type(n+2){
+  display:none !important;
+}
+
+/* transparent iframes (copy / read aloud / share icons) */
+[class*="st-key-actbar_"] iframe{
+  color-scheme:normal !important;
+  background:transparent !important;
+  border:0 !important;
+}
+
+.pearl-vcount{
+  font-size:0.74rem;
+  color:#9CA8C7;
+  padding:0 2px;
+  white-space:nowrap;
+}
+
+/* popover menus (More / See versions) */
+[data-testid="stPopoverBody"]{
+  background:#151D33 !important;
+  border:1px solid rgba(148,163,184,0.22) !important;
+  border-radius:12px !important;
+  min-width:230px;
+}
+
+.pearl-pop-title{
+  font-size:0.78rem;
+  color:#9CA8C7;
+  padding:2px 4px 6px 4px;
+}
+
+[class*="st-key-branch_"] button,
+[class*="st-key-verpick_"] button{
+  justify-content:flex-start !important;
+  text-align:left !important;
+}
+
+/* inline edit box (replaces the bubble while editing) */
+[class*="st-key-editbox_"]{
+  padding-left:10%;
+  padding-right:46px;
+  margin:14px 0 6px 0;
+}
+
+[class*="st-key-editbox_"] textarea{
+  background:#11182D !important;
+  color:#E8ECF8 !important;
+  border:1px solid rgba(99,102,241,0.45) !important;
+  border-radius:14px !important;
+  font-family:'Inter',sans-serif !important;
+  font-size:0.92rem !important;
+}
+
+[class*="st-key-editbox_"] button[data-testid="stBaseButton-primary"]{
+  background:linear-gradient(135deg,#6366F1,#7C3AED) !important;
+  border:none !important;
+  color:#FFFFFF !important;
+  font-weight:700 !important;
+}
+
 </style>
 """
 
@@ -2034,9 +2179,45 @@ def new_conversation():
         "title": "New chat",
         "messages": [],
         "created": datetime.now(),
+        "thread_id": conv_id,   # agent memory thread (changes when history is rewritten)
+        "seeded": True,         # False = the thread must be refilled from the screen
+        "pending": False,       # True = last user message still needs an answer
+        "regen": None,          # earlier replies kept by "Try again"
     }
     st.session_state.active_id = conv_id
     return conv_id
+
+
+def reset_thread(conv):
+    """Give the chat a fresh agent memory thread.
+
+    Needed whenever the visible history is rewritten (edit, try again,
+    switching versions, clearing, branching). The next question then
+    replays the visible history into the new thread, so the model always
+    sees exactly what the person sees on screen.
+    """
+    conv["thread_id"] = str(uuid.uuid4())
+    conv["seeded"] = False
+
+
+def normalize_conv(conv_id, conv):
+    """Fill in the fields the message actions need (also for older chats)."""
+    conv.setdefault("thread_id", conv_id)
+    conv.setdefault("seeded", True)
+    conv.setdefault("pending", False)
+    conv.setdefault("regen", None)
+
+    for m in conv["messages"]:
+        m.setdefault("id", str(uuid.uuid4()))
+        m.setdefault("time", conv.get("created") or datetime.now())
+        if m.get("role") == "assistant":
+            m.setdefault("variants", [m.get("content", "")])
+            m.setdefault("variant_idx", 0)
+            m.setdefault("ratings", {})
+
+
+if "editing" not in st.session_state:
+    st.session_state.editing = None
 
 
 if "conversations" not in st.session_state:
@@ -2053,6 +2234,12 @@ if "active_id" not in st.session_state or st.session_state.active_id not in st.s
         new_conversation()
 
 active_conv = st.session_state.conversations[st.session_state.active_id]
+normalize_conv(st.session_state.active_id, active_conv)
+
+# one-shot message (e.g. after rating a reply) shown at the top of the next run
+_toast_text = st.session_state.pop("pending_toast", None)
+if _toast_text:
+    st.toast(_toast_text)
 
 
 # ============================================================
@@ -2137,6 +2324,717 @@ def render_error_html(message):
       <div class="pearl-error">{safe}</div>
     </div>
     """
+
+
+# ============================================================
+# MESSAGE ACTIONS  (ChatGPT-style toolbar under every message)
+#
+#   Your messages   : See versions · Copy message · Share prompt ·
+#                     Edit message
+#   Pearl's replies : Copy response · Rate response (👍 / 👎) ·
+#                     Read aloud · Share · Try again · More
+#                     (More -> time stamp + Branch in new chat)
+#
+#   Copy / Read aloud / Share need the browser (clipboard, speech,
+#   share sheet), so they live in a tiny sandboxed HTML button strip.
+#   Everything that changes the conversation (rate, edit, try again,
+#   versions, branch) is a normal Streamlit button.
+# ============================================================
+
+ACTION_ICONS = {
+    "copy": '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+    "check": '<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>',
+    "share": '<svg viewBox="0 0 24 24"><path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>',
+    "speak": '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>',
+    "stop": '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>',
+}
+
+ACTION_IFRAME_TEMPLATE = r"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin:0; padding:0; background:transparent; overflow:hidden; }
+  body { display:flex; align-items:center; gap:2px; height:36px; }
+  button {
+    width:32px; height:32px; border:0; border-radius:8px; padding:0;
+    background:transparent; color:#9CA8C7; cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+    transition:background .15s ease, color .15s ease;
+  }
+  button:hover { background:rgba(148,163,184,.16); color:#F1F5F9; }
+  button.on   { color:#A5B4FC; background:rgba(99,102,241,.20); }
+  button.done { color:#4ADE80; }
+  button:disabled { opacity:.35; cursor:not-allowed; }
+  svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.9;
+        stroke-linecap:round; stroke-linejoin:round; pointer-events:none; }
+</style>
+</head>
+<body>
+__BUTTONS__
+<script>
+(function () {
+  const CFG = __CFG__;
+  const ICONS = __ICONS__;
+  const byId = (id) => document.getElementById(id);
+
+  async function copyText(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (e) { /* fall through to the legacy method */ }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch (e) { return false; }
+  }
+
+  function flash(btn, title) {
+    if (btn.dataset.busy) return;
+    btn.dataset.busy = '1';
+    const oldHtml = btn.innerHTML, oldTitle = btn.title;
+    btn.innerHTML = ICONS.check;
+    btn.classList.add('done');
+    btn.title = title;
+    setTimeout(function () {
+      btn.innerHTML = oldHtml;
+      btn.classList.remove('done');
+      btn.title = oldTitle;
+      delete btn.dataset.busy;
+    }, 1600);
+  }
+
+  // ---------------- Copy ----------------
+  const copyBtn = byId('copy');
+  if (copyBtn) {
+    copyBtn.onclick = async function () {
+      const ok = await copyText(CFG.text);
+      flash(copyBtn, ok ? 'Copied' : 'Copy failed');
+    };
+  }
+
+  // ---------------- Share ----------------
+  // Uses the device share sheet when the browser has one, otherwise
+  // copies the text to the clipboard.
+  const shareBtn = byId('share');
+  if (shareBtn) {
+    shareBtn.onclick = async function () {
+      try {
+        if (navigator.share) {
+          await navigator.share({ title: 'Pearl.Ai', text: CFG.text });
+          return;
+        }
+      } catch (e) {
+        if (e && e.name === 'AbortError') return;
+      }
+      const ok = await copyText(CFG.text);
+      flash(shareBtn, ok ? 'Copied to clipboard' : 'Share failed');
+    };
+  }
+
+  // ---------------- Read aloud ----------------
+  const speakBtn = byId('speak');
+  if (speakBtn) {
+    let W = window;
+    try {
+      // use the parent page's speech engine so the voice keeps going
+      // (and can be stopped) even when Streamlit redraws this strip
+      if (window.parent && window.parent.speechSynthesis && window.parent.document) {
+        W = window.parent;
+      }
+    } catch (e) { W = window; }
+
+    const synth = W.speechSynthesis;
+    let showing = false;
+
+    const isActive = function () {
+      return !!synth && W.__pearlSpeakId === CFG.id && (synth.speaking || synth.pending);
+    };
+
+    const paint = function (on) {
+      showing = on;
+      speakBtn.innerHTML = on ? ICONS.stop : ICONS.speak;
+      speakBtn.classList.toggle('on', on);
+      speakBtn.title = on ? 'Stop' : CFG.labels.speak;
+    };
+
+    const chunksOf = function (text) {
+      const parts = text.match(/[^.!?\n]+[.!?]*\s*/g) || [text];
+      const out = [];
+      let cur = '';
+      parts.forEach(function (p) {
+        if (cur && (cur + p).length > 220) { out.push(cur); cur = p; }
+        else { cur += p; }
+      });
+      if (cur.trim()) out.push(cur);
+      return out;
+    };
+
+    if (!synth) {
+      speakBtn.disabled = true;
+      speakBtn.title = 'Read aloud is not supported in this browser';
+    } else {
+      if (isActive()) paint(true);
+
+      speakBtn.onclick = function () {
+        if (isActive()) {
+          W.__pearlSpeakId = null;
+          synth.cancel();
+          paint(false);
+          return;
+        }
+        synth.cancel();
+        W.__pearlSpeakId = CFG.id;
+        const lang = /[\u0B80-\u0BFF]/.test(CFG.speech) ? 'ta-IN' : '';
+        chunksOf(CFG.speech).forEach(function (chunk) {
+          const u = new W.SpeechSynthesisUtterance(chunk);
+          if (lang) u.lang = lang;
+          synth.speak(u);
+        });
+        paint(true);
+      };
+
+      // keeps the icon right when speech ends by itself or another
+      // message starts talking
+      setInterval(function () {
+        const active = isActive();
+        if (active !== showing) paint(active);
+      }, 400);
+    }
+  }
+})();
+</script>
+</body>
+</html>
+"""
+
+
+def strip_markdown_for_speech(text):
+    """Plain text for the voice: no asterisks, hashes, links or code."""
+    t = re.sub(r"```.*?```", " (code block omitted) ", text or "", flags=re.DOTALL)
+    t = re.sub(r"`([^`]*)`", r"\1", t)
+    t = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", t)
+    t = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", t)
+    t = re.sub(r"^#{1,6}\s*", "", t, flags=re.MULTILINE)
+    t = re.sub(r"^\s*[-*+]\s+", "", t, flags=re.MULTILINE)
+    t = re.sub(r"(\*\*|__|\*)", "", t)
+    return t.strip()
+
+
+def action_iframe(uid, text, buttons, labels):
+    """A small strip of browser-side buttons: copy / speak / share."""
+    button_html = "".join(
+        f'<button id="{name}" type="button" '
+        f'title="{htmllib.escape(labels[name], quote=True)}" '
+        f'aria-label="{htmllib.escape(labels[name], quote=True)}">'
+        f"{ACTION_ICONS[name]}</button>"
+        for name in buttons
+    )
+
+    cfg = {
+        "id": uid,
+        "text": text,
+        "speech": strip_markdown_for_speech(text) if "speak" in buttons else "",
+        "labels": labels,
+    }
+    cfg_json = (
+        json.dumps(cfg, ensure_ascii=False)
+        .replace("</", "<\\/")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+    page = (
+        ACTION_IFRAME_TEMPLATE
+        .replace("__BUTTONS__", button_html)
+        .replace("__ICONS__", json.dumps(ACTION_ICONS))
+        .replace("__CFG__", cfg_json)
+    )
+
+    width = 34 * len(buttons) + 4
+
+    # Newer Streamlit replaced components.html with st.iframe
+    if hasattr(st, "iframe"):
+        st.iframe(page, width=width, height=36)
+    else:
+        components.html(page, height=36, width=width)
+
+
+# ------------------------------------------------------------
+# Small widget helpers (fall back gracefully on older Streamlit)
+# ------------------------------------------------------------
+
+def icon_button(key, icon, help_text, fallback="•", **kwargs):
+    try:
+        return st.button("", key=key, icon=icon, help=help_text, **kwargs)
+    except TypeError:
+        return st.button(fallback, key=key, help=help_text, **kwargs)
+
+
+def icon_popover(icon, help_text, fallback="⋯"):
+    try:
+        return st.popover("", icon=icon, help=help_text)
+    except TypeError:
+        return st.popover(fallback)
+
+
+def menu_button(label, key, icon, **kwargs):
+    try:
+        return st.button(label, key=key, icon=icon, **kwargs)
+    except TypeError:
+        return st.button(label, key=key, **kwargs)
+
+
+def format_msg_time(ts):
+    """'Today, 4:25 PM' / 'Yesterday, 9:05 AM' / 'Oct 31, 5:03 PM'."""
+    if not ts:
+        return ""
+    now = datetime.now()
+    clock = ts.strftime("%I:%M %p").lstrip("0")
+    if ts.date() == now.date():
+        return f"Today, {clock}"
+    if (now.date() - ts.date()).days == 1:
+        return f"Yesterday, {clock}"
+    return f"{ts.strftime('%b')} {ts.day}, {clock}"
+
+
+def make_title(text):
+    short = (text or "").replace("\n", " ").strip()
+    return (short[:40] + "…") if len(short) > 40 else short
+
+
+# ------------------------------------------------------------
+# Building / changing messages
+# ------------------------------------------------------------
+
+def make_user_message(content, files=None):
+    return {
+        "id": str(uuid.uuid4()),
+        "role": "user",
+        "content": content,
+        "files": files or [],
+        "time": datetime.now(),
+    }
+
+
+def make_assistant_message(content, variants=None, ratings=None, msg_id=None):
+    variants = list(variants) if variants else [content]
+    return {
+        "id": msg_id or str(uuid.uuid4()),
+        "role": "assistant",
+        "content": content,
+        "variants": variants,
+        "variant_idx": len(variants) - 1,
+        "ratings": dict(ratings or {}),
+        "time": datetime.now(),
+    }
+
+
+def history_payload(messages):
+    """Visible chat -> clean list of {role, content} for the model."""
+    return build_history_messages(
+        [
+            {"role": m.get("role"), "content": m.get("content", "")}
+            for m in messages
+            if m.get("content")
+        ]
+    )
+
+
+def set_rating(conv_id, conv, idx, msg, rating):
+    """👍 / 👎 on a reply. Clicking the same one again removes it."""
+    vidx = msg.get("variant_idx", 0)
+    ratings = msg.setdefault("ratings", {})
+    new_value = None if ratings.get(vidx) == rating else rating
+
+    if new_value is None:
+        ratings.pop(vidx, None)
+    else:
+        ratings[vidx] = new_value
+
+    prompt = ""
+    for j in range(idx - 1, -1, -1):
+        if conv["messages"][j]["role"] == "user":
+            prompt = conv["messages"][j].get("content", "")
+            break
+
+    try:
+        save_feedback(
+            conversation_id=conv_id,
+            message_id=msg["id"],
+            rating=new_value,
+            prompt=prompt,
+            response=msg.get("content", ""),
+        )
+    except Exception:
+        pass  # feedback logging must never break the chat
+
+    st.session_state.pending_toast = {
+        "up": "Thanks for the feedback!",
+        "down": "Thanks - this helps Pearl improve.",
+        None: "Feedback removed.",
+    }[new_value]
+
+
+def apply_edit(conv, idx, new_text):
+    """Replace a user message, keep the old one as a version, answer again."""
+    msgs = conv["messages"]
+    msg = msgs[idx]
+
+    versions = msg.get("versions")
+    if not versions:
+        versions = [{"content": msg["content"], "time": msg.get("time"), "tail": []}]
+        msg["version_idx"] = 0
+
+    current = msg.get("version_idx", 0)
+    versions[current]["content"] = msg["content"]
+    versions[current]["tail"] = msgs[idx + 1:]
+
+    now = datetime.now()
+    versions.append({"content": new_text, "time": now, "tail": []})
+
+    msg["versions"] = versions
+    msg["version_idx"] = len(versions) - 1
+    msg["content"] = new_text
+    msg["time"] = now
+
+    del msgs[idx + 1:]
+
+    if idx == 0:
+        conv["title"] = make_title(new_text)
+
+    conv["regen"] = None
+    reset_thread(conv)
+    conv["pending"] = True
+
+
+def switch_version(conv, idx, target):
+    """Show another version of an edited message (and the replies under it)."""
+    msgs = conv["messages"]
+    msg = msgs[idx]
+    versions = msg.get("versions") or []
+    current = msg.get("version_idx", 0)
+
+    if target == current or not (0 <= target < len(versions)):
+        return
+
+    versions[current]["content"] = msg["content"]
+    versions[current]["tail"] = msgs[idx + 1:]
+    del msgs[idx + 1:]
+
+    chosen = versions[target]
+    msg["content"] = chosen.get("content", "")
+    msg["time"] = chosen.get("time") or msg.get("time")
+    msg["version_idx"] = target
+
+    tail = chosen.get("tail") or []
+    msgs.extend(tail)
+    chosen["tail"] = []
+
+    if idx == 0:
+        conv["title"] = make_title(msg["content"])
+
+    conv["regen"] = None
+    reset_thread(conv)
+    # a version that never got an answer is answered now
+    conv["pending"] = not tail
+
+
+def start_regenerate(conv):
+    """Try again: drop the last reply but remember it as an earlier version."""
+    msgs = conv["messages"]
+    if not msgs or msgs[-1]["role"] != "assistant":
+        return
+
+    last = msgs.pop()
+    conv["regen"] = {
+        "id": last.get("id"),
+        "variants": list(last.get("variants") or [last.get("content", "")]),
+        "ratings": dict(last.get("ratings") or {}),
+    }
+    reset_thread(conv)
+    conv["pending"] = True
+
+
+def change_variant(conv, msg, delta):
+    """‹ 1/2 › - flip between the replies produced by Try again."""
+    variants = msg.get("variants") or [msg["content"]]
+    new_idx = max(0, min(len(variants) - 1, msg.get("variant_idx", 0) + delta))
+    msg["variant_idx"] = new_idx
+    msg["content"] = variants[new_idx]
+    reset_thread(conv)
+
+
+def branch_conversation(conv, idx):
+    """Copy the chat up to (and including) message idx into a NEW chat."""
+    new_id = str(uuid.uuid4())
+
+    skip = {"versions", "version_idx", "variants", "variant_idx", "ratings", "id"}
+    copied = []
+    for m in conv["messages"][: idx + 1]:
+        c = {k: copy.deepcopy(v) for k, v in m.items() if k not in skip}
+        c["id"] = str(uuid.uuid4())
+        if c["role"] == "assistant":
+            c["variants"] = [c["content"]]
+            c["variant_idx"] = 0
+            c["ratings"] = {}
+        copied.append(c)
+
+    base = conv.get("title") or "New chat"
+    if base.startswith("Branch · "):
+        base = base[len("Branch · "):]
+
+    st.session_state.conversations[new_id] = {
+        "title": f"Branch · {base}",
+        "messages": copied,
+        "created": datetime.now(),
+        "thread_id": new_id,
+        "seeded": False,  # the first question replays the copied history
+        "pending": False,
+        "regen": None,
+    }
+    st.session_state.active_id = new_id
+    st.session_state.editing = None
+
+
+# ------------------------------------------------------------
+# Rendering the toolbars
+# ------------------------------------------------------------
+
+def render_user_actions(conv_id, conv, idx, msg):
+    uid = f"{conv_id[:8]}_{idx}_{msg['id'][:6]}"
+    versions = msg.get("versions") or []
+    has_text = bool(msg.get("content"))
+
+    slots = []
+    if len(versions) > 1:
+        slots.append("versions")
+    if has_text:
+        slots += ["clip", "edit"]
+    if not slots:
+        return
+
+    with st.container(key=f"actbar_user_{uid}"):
+        cols = st.columns(len(slots))
+
+        for slot, col in zip(slots, cols):
+            with col:
+
+                if slot == "versions":
+                    with icon_popover(":material/history:", "See versions", "🕘"):
+                        st.markdown(
+                            '<div class="pearl-pop-title">Versions of this message</div>',
+                            unsafe_allow_html=True,
+                        )
+                        current = msg.get("version_idx", 0)
+                        for vi, v in enumerate(versions):
+                            text = msg["content"] if vi == current else v.get("content", "")
+                            text = text.replace("\n", " ")
+                            label = f"{vi + 1}. " + (text[:38] + "…" if len(text) > 38 else text)
+                            if st.button(
+                                label,
+                                key=f"verpick_{uid}_{vi}",
+                                type="primary" if vi == current else "secondary",
+                                use_container_width=True,
+                            ):
+                                switch_version(conv, idx, vi)
+                                st.rerun()
+
+                elif slot == "clip":
+                    action_iframe(
+                        f"{uid}_u",
+                        msg["content"],
+                        ["copy", "share"],
+                        {"copy": "Copy message", "share": "Share prompt"},
+                    )
+
+                elif slot == "edit":
+                    if icon_button(
+                        f"edit_{uid}", ":material/edit:", "Edit message", fallback="✏️"
+                    ):
+                        st.session_state.editing = (conv_id, idx)
+                        st.rerun()
+
+
+def render_assistant_actions(conv_id, conv, idx, msg, is_last):
+    uid = f"{conv_id[:8]}_{idx}_{msg['id'][:6]}"
+    msgs = conv["messages"]
+
+    variants = msg.get("variants") or [msg["content"]]
+    vidx = msg.get("variant_idx", 0)
+    rating = (msg.get("ratings") or {}).get(vidx)
+
+    can_retry = (
+        is_last
+        and idx > 0
+        and msgs[idx - 1]["role"] == "user"
+        and bool(msgs[idx - 1].get("content"))
+    )
+
+    slots = []
+    if len(variants) > 1:
+        slots += ["prev", "count", "next"]
+    slots += ["copy", "up", "down", "audio"]
+    if can_retry:
+        slots.append("retry")
+    slots.append("more")
+
+    with st.container(key=f"actbar_asst_{uid}"):
+        cols = st.columns(len(slots))
+
+        for slot, col in zip(slots, cols):
+            with col:
+
+                if slot == "prev":
+                    if icon_button(
+                        f"prev_{uid}", ":material/chevron_left:", "Previous response",
+                        fallback="‹", disabled=vidx <= 0,
+                    ):
+                        change_variant(conv, msg, -1)
+                        st.rerun()
+
+                elif slot == "count":
+                    st.markdown(
+                        f'<span class="pearl-vcount">{vidx + 1}/{len(variants)}</span>',
+                        unsafe_allow_html=True,
+                    )
+
+                elif slot == "next":
+                    if icon_button(
+                        f"next_{uid}", ":material/chevron_right:", "Next response",
+                        fallback="›", disabled=vidx >= len(variants) - 1,
+                    ):
+                        change_variant(conv, msg, 1)
+                        st.rerun()
+
+                elif slot == "copy":
+                    action_iframe(
+                        f"{uid}_c", msg["content"], ["copy"], {"copy": "Copy response"}
+                    )
+
+                elif slot == "up":
+                    if icon_button(
+                        f"up_{uid}", ":material/thumb_up:", "Good response",
+                        fallback="👍", type="primary" if rating == "up" else "secondary",
+                    ):
+                        set_rating(conv_id, conv, idx, msg, "up")
+                        st.rerun()
+
+                elif slot == "down":
+                    if icon_button(
+                        f"down_{uid}", ":material/thumb_down:", "Bad response",
+                        fallback="👎", type="primary" if rating == "down" else "secondary",
+                    ):
+                        set_rating(conv_id, conv, idx, msg, "down")
+                        st.rerun()
+
+                elif slot == "audio":
+                    action_iframe(
+                        f"{uid}_a",
+                        msg["content"],
+                        ["speak", "share"],
+                        {"speak": "Read aloud", "share": "Share"},
+                    )
+
+                elif slot == "retry":
+                    if icon_button(
+                        f"retry_{uid}", ":material/refresh:", "Try again...", fallback="↻"
+                    ):
+                        start_regenerate(conv)
+                        st.rerun()
+
+                elif slot == "more":
+                    with icon_popover(":material/more_horiz:", "More actions", "⋯"):
+                        st.markdown(
+                            f'<div class="pearl-pop-title">'
+                            f'{htmllib.escape(format_msg_time(msg.get("time")))}</div>',
+                            unsafe_allow_html=True,
+                        )
+                        if menu_button(
+                            "Branch in new chat",
+                            key=f"branch_{uid}",
+                            icon=":material/call_split:",
+                            use_container_width=True,
+                        ):
+                            branch_conversation(conv, idx)
+                            st.rerun()
+
+
+def render_edit_box(conv_id, conv, idx, msg):
+    """Inline editor that replaces the user's bubble while editing."""
+    uid = f"{conv_id[:8]}_{idx}"
+
+    with st.container(key=f"editbox_{uid}"):
+        new_text = st.text_area(
+            "Edit message",
+            value=msg["content"],
+            key=f"edit_text_{uid}",
+            height=120,
+            label_visibility="collapsed",
+        )
+        c_cancel, c_send, _ = st.columns([1, 1, 4])
+        with c_cancel:
+            cancel = st.button("Cancel", key=f"edit_cancel_{uid}", use_container_width=True)
+        with c_send:
+            send = st.button(
+                "Send", key=f"edit_send_{uid}", type="primary", use_container_width=True
+            )
+
+    if cancel:
+        st.session_state.editing = None
+        st.rerun()
+
+    if send:
+        text = (new_text or "").strip()
+        if not text:
+            st.session_state.pending_toast = "A message can't be empty."
+        elif text != msg["content"]:
+            apply_edit(conv, idx, text)
+        st.session_state.editing = None
+        st.rerun()
+
+
+def render_history(conv_id, conv):
+    """Every message with its own toolbar."""
+    msgs = conv["messages"]
+    busy = bool(conv.get("pending"))
+    editing = st.session_state.get("editing")
+    last_idx = len(msgs) - 1
+
+    for idx, msg in enumerate(msgs):
+        with st.container(key=f"msgwrap_{conv_id[:8]}_{idx}"):
+
+            if (
+                msg["role"] == "user"
+                and not busy
+                and editing is not None
+                and tuple(editing) == (conv_id, idx)
+            ):
+                render_edit_box(conv_id, conv, idx, msg)
+                continue
+
+            st.markdown(
+                render_message_html(msg["role"], msg["content"], msg.get("files")),
+                unsafe_allow_html=True,
+            )
+
+            if busy:
+                continue  # no toolbar while a reply is being written
+
+            if msg["role"] == "user":
+                render_user_actions(conv_id, conv, idx, msg)
+            else:
+                render_assistant_actions(conv_id, conv, idx, msg, idx == last_idx)
 
 
 # ============================================================
@@ -2582,6 +3480,10 @@ with st.sidebar:
     ):
 
         active_conv["messages"] = []
+        active_conv["pending"] = False
+        active_conv["regen"] = None
+        reset_thread(active_conv)
+        st.session_state.editing = None
 
         st.rerun()
         
@@ -2608,26 +3510,7 @@ st.markdown(
 # CHAT HISTORY
 # ============================================================
 
-chat_container = st.container()
-
-with chat_container:
-
-    if not active_conv["messages"]:
-        st.markdown(
-            """
-            <div class="pearl-empty">
-              <div class="pearl-orb-hero"></div>
-              <h3>Start a new conversation</h3>
-              <div>Begin below with a question, a technical issue, or a request that requires current information.</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        history_html = "".join(
-            render_message_html(m["role"], m["content"], m.get("files")) for m in active_conv["messages"]
-        )
-        st.markdown(history_html, unsafe_allow_html=True)
+chat_container = st.container()   # filled further down (after the helpers)
 
 
 # ============================================================
@@ -2742,8 +3625,11 @@ def _run_streaming(payload, config, on_text, on_status):
     return reply or buffer
 
 
-def run_agent(prompt, thread_id, on_text, on_status, allowed_docs=None):
-    payload = {"messages": [{"role": "user", "content": prompt}]}
+def run_agent(prompt, thread_id, on_text, on_status, allowed_docs=None, history=None):
+    # `history` (list of {role, content}) is only given for a brand-new thread
+    # whose earlier messages must be replayed (after edit / try again / branch).
+    messages = list(history or []) + [{"role": "user", "content": prompt}]
+    payload = {"messages": messages}
     config = {"configurable": {"thread_id": thread_id}}
     if allowed_docs is not None:
         config["configurable"]["allowed_docs"] = list(allowed_docs)
@@ -2838,15 +3724,143 @@ if submission:
         prompt = (getattr(submission, "text", "") or "").strip()
         attached_files = list(getattr(submission, "files", []) or [])
 
+# ============================================================
+# GENERATING A REPLY  (shared by: new message, edit, try again,
+# switching to a version that has no answer yet)
+# ============================================================
+
+def generate_reply(conv, prompt, placeholder):
+    """Run the agent and stream the answer into `placeholder`.
+
+    Returns (text, is_error). The last message of `conv` must be the
+    user's message that is being answered.
+    """
+    placeholder.markdown(render_thinking_html(), unsafe_allow_html=True)
+
+    def paint_text(text):
+        placeholder.markdown(
+            render_message_html("assistant", text + " ▌"),
+            unsafe_allow_html=True,
+        )
+
+    def paint_status(message):
+        placeholder.markdown(render_thinking_html(message), unsafe_allow_html=True)
+
+    # A chat whose history was rewritten (edit / try again / branch) has a
+    # fresh, empty agent thread: replay what is on screen into it first.
+    history = None
+    if not conv.get("seeded", True):
+        history = history_payload(conv["messages"][:-1])
+
+    try:
+        if st.session_state.session_docs:
+            paint_status("Searching your documents&hellip;")
+
+        reply = run_agent(
+            build_agent_prompt(prompt),
+            conv["thread_id"],
+            on_text=paint_text,
+            on_status=paint_status,
+            allowed_docs=st.session_state.session_docs,
+            history=history,
+        )
+
+        if not reply:
+            reply = "No response could be generated for this request."
+
+        conv["seeded"] = True
+        return reply, False
+
+    except Exception as exc:
+        reset_thread(conv)  # the thread may be half-written: start clean next time
+        return friendly_error(exc), True
+
+
+def run_pending_generation(conv):
+    """Answer the last user message (after an edit / try again / version switch)."""
+    prompt = conv["messages"][-1].get("content", "")
+
+    placeholder = st.empty()
+    reply, is_error = generate_reply(conv, prompt, placeholder)
+
+    placeholder.markdown(
+        render_error_html(reply) if is_error else render_message_html("assistant", reply),
+        unsafe_allow_html=True,
+    )
+
+    regen = conv.get("regen")
+    if regen:
+        # "Try again": keep earlier replies so ‹ 1/2 › can flip between them
+        conv["messages"].append(
+            make_assistant_message(
+                reply,
+                variants=regen["variants"] + [reply],
+                ratings=regen["ratings"],
+                msg_id=regen.get("id"),
+            )
+        )
+    else:
+        conv["messages"].append(make_assistant_message(reply))
+
+    conv["regen"] = None
+    conv["pending"] = False
+
+
+# ============================================================
+# DRAW THE CONVERSATION
+#   (chat_container was reserved under the header above)
+# ============================================================
+
+new_submission = bool(prompt or attached_files)
+empty_placeholder = None
+
+with chat_container:
+
+    if not active_conv["messages"]:
+        empty_placeholder = st.empty()
+        empty_placeholder.markdown(
+            """
+            <div class="pearl-empty">
+              <div class="pearl-orb-hero"></div>
+              <h3>Start a new conversation</h3>
+              <div>Begin below with a question, a technical issue, or a request that requires current information.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        active_conv["pending"] = False
+
+    else:
+        render_history(st.session_state.active_id, active_conv)
+
+        if active_conv.get("pending"):
+            if active_conv["messages"][-1]["role"] == "user" and not new_submission:
+                run_pending_generation(active_conv)
+                st.rerun()
+            else:
+                active_conv["pending"] = False
+                active_conv["regen"] = None
+
+
+# ============================================================
+# NEW MESSAGE FROM THE CHAT BOX
+# ============================================================
+
 if prompt or attached_files:
+
+    active_conv["pending"] = False
+    active_conv["regen"] = None
+    st.session_state.editing = None
 
     # Auto-title this chat from its first message (or first file)
     if active_conv["title"] in ("New chat", "", None):
         title_source = prompt or (attached_files[0].name if attached_files else "")
-        short_title = title_source.replace("\n", " ")
-        active_conv["title"] = (short_title[:40] + "…") if len(short_title) > 40 else short_title
+        active_conv["title"] = make_title(title_source)
 
     with chat_container:
+
+        if empty_placeholder is not None:
+            empty_placeholder.empty()
 
         # Show the user's message straight away, with the files marked
         # "uploading" until they are saved.
@@ -2862,9 +3876,7 @@ if prompt or attached_files:
 
         file_results = ingest_files(attached_files) if attached_files else []
 
-        active_conv["messages"].append(
-            {"role": "user", "content": prompt, "files": file_results}
-        )
+        active_conv["messages"].append(make_user_message(prompt, file_results))
         user_placeholder.markdown(
             render_message_html("user", prompt, file_results), unsafe_allow_html=True
         )
@@ -2889,54 +3901,24 @@ if prompt or attached_files:
             thinking_placeholder.markdown(
                 render_message_html("assistant", bot_reply), unsafe_allow_html=True
             )
-            active_conv["messages"].append({"role": "assistant", "content": bot_reply})
+            active_conv["messages"].append(make_assistant_message(bot_reply))
 
         else:
-            thinking_placeholder.markdown(render_thinking_html(), unsafe_allow_html=True)
+            # Runs the deep agent in-process (no FastAPI). Each chat keeps
+            # its own thread_id so separate chats keep separate memory.
+            bot_reply, reply_failed = generate_reply(active_conv, prompt, thinking_placeholder)
 
-            def paint_text(text):
-                thinking_placeholder.markdown(
-                    render_message_html("assistant", text + " ▌"),
-                    unsafe_allow_html=True,
-                )
+            thinking_placeholder.markdown(
+                render_error_html(bot_reply)
+                if reply_failed
+                else render_message_html("assistant", bot_reply),
+                unsafe_allow_html=True,
+            )
+            active_conv["messages"].append(make_assistant_message(bot_reply))
 
-            def paint_status(message):
-                thinking_placeholder.markdown(
-                    render_thinking_html(message), unsafe_allow_html=True
-                )
-
-            try:
-
-                # Runs the deep agent in-process (no FastAPI). Each chat keeps
-                # its own thread_id so separate chats keep separate memory.
-                if st.session_state.session_docs:
-                    paint_status("Searching your documents&hellip;")
-
-                bot_reply = run_agent(
-                    build_agent_prompt(prompt),
-                    st.session_state.active_id,
-                    on_text=paint_text,
-                    on_status=paint_status,
-                    allowed_docs=st.session_state.session_docs,
-                )
-
-                if not bot_reply:
-                    bot_reply = "No response could be generated for this request."
-
-                thinking_placeholder.markdown(
-                    render_message_html("assistant", bot_reply), unsafe_allow_html=True
-                )
-                active_conv["messages"].append({"role": "assistant", "content": bot_reply})
-
-            except Exception as e:
-                error_message = friendly_error(e)
-                thinking_placeholder.markdown(
-                    render_error_html(error_message), unsafe_allow_html=True
-                )
-                active_conv["messages"].append({"role": "assistant", "content": error_message})
-
-    # Redraw once so the sidebar chat title updates right after the first message
+    # Redraw once so the sidebar chat title and the message toolbars update
     st.rerun()
+
 
 st.markdown(
         """
