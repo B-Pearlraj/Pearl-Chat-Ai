@@ -6,6 +6,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from dotenv import load_dotenv
 
 from langgraph.checkpoint.memory import InMemorySaver
+from langchain_core.runnables import RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.agents.middleware import ModelFallbackMiddleware
 from tavily import TavilyClient
@@ -242,7 +243,51 @@ def _trim_passages(results, limit=1500):
     return trimmed
 
 
-def search_documents(query: str):
+def _allowed_docs(config):
+    """Filenames the current visitor may search (None = no restriction).
+
+    The Streamlit app passes the files each visitor uploaded in their own
+    session, so one visitor's questions never read another visitor's files.
+    """
+
+    try:
+        return (config or {}).get("configurable", {}).get("allowed_docs")
+    except Exception:
+        return None
+
+
+def _filter_to_session(results, allowed):
+    if allowed is None:
+        return results
+
+    allowed = set(allowed)
+
+    if results and not any(isinstance(r, dict) and "filename" in r for r in results):
+        print("[documents] WARNING: search results have no 'filename' field, "
+              "so they cannot be limited to this visitor's files.")
+        return results
+
+    return [
+        r for r in results
+        if isinstance(r, dict) and r.get("filename") in allowed
+    ]
+
+
+def search_session_documents(query: str, allowed=None, top_k: int = 5):
+    """Semantic search limited to the given filenames (all files if None)."""
+
+    if allowed is not None and not allowed:
+        return []
+
+    # fetch extra, because other visitors' files are filtered out afterwards
+    fetch = top_k if allowed is None else max(top_k * 4, 20)
+
+    results = vector_store.search(query, top_k=fetch)
+
+    return _filter_to_session(results, allowed)[:top_k]
+
+
+def search_documents(query: str, config: RunnableConfig):
     """
     Search the documents the user has uploaded (PDF, DOCX, TXT, MD, CSV).
     Call this whenever the question may be answered by an uploaded
@@ -254,8 +299,16 @@ def search_documents(query: str):
     Returns the most relevant passages with filename and page number.
     """
 
+    allowed = _allowed_docs(config)
+
+    if allowed is not None and not allowed:
+        return {
+            "results": [],
+            "message": "The user has not uploaded any documents in this chat.",
+        }
+
     try:
-        results = vector_store.search(query, top_k=5)
+        results = search_session_documents(query, allowed, top_k=5)
     except Exception as e:
         return {"error": f"Document search is unavailable: {e}"}
 
@@ -268,16 +321,23 @@ def search_documents(query: str):
     return {"results": _trim_passages(results)}
 
 
-def list_uploaded_documents():
+def list_uploaded_documents(config: RunnableConfig):
     """
     List the documents that are currently uploaded and searchable.
     Call this when the user asks which documents/files they have uploaded.
     """
 
+    allowed = _allowed_docs(config)
+
     try:
-        return {"documents": vector_store.list_documents()}
+        docs = vector_store.list_documents()
     except Exception as e:
         return {"error": f"Could not read the document list: {e}"}
+
+    if allowed is not None:
+        docs = [d for d in docs if isinstance(d, dict) and d.get("filename") in set(allowed)]
+
+    return {"documents": docs}
 
 
 TOOLS = [
@@ -305,20 +365,23 @@ TOOLS AND WHEN TO USE THEM
    ages as of today. Never answer these from memory. Use the exact values it
    returns; do not adjust or round them.
 
-2. search_documents / list_uploaded_documents - the user's uploaded files
-   (PDF, DOCX, TXT, MD, CSV).
-   - Call search_documents when the user mentions "the document", "the file",
-     "the PDF", "uploaded", "attached", "my notes/report", or asks for specific
-     facts (names, figures, dates, policies, contracts, resumes) that could be
-     inside their files, or asks to summarize/explain their documents.
-   - Use a short, self-contained query. If the first result is weak, try ONE
-     more query with different wording.
-   - For document questions answer ONLY from the returned passages and cite
-     briefly, e.g. (Source: report.pdf, page 3). If nothing relevant is
-     returned, say the answer was not found in the uploaded documents - do not
-     guess. If the tool returns an error, say document search is unavailable.
+2. DOCUMENTS FIRST. The user may upload files (PDF, DOCX, TXT, MD, CSV).
+   - If the message starts with a [DOCUMENT CONTEXT] block, those passages were
+     already retrieved from the user's uploaded files. Answer from them whenever
+     they contain the answer, and cite briefly, e.g. (Source: report.pdf, page 3).
+     Do NOT call web_search for such a question unless the user explicitly asks
+     for web / online / current information. If the passages do not contain the
+     answer, say clearly that it was not found in the uploaded documents - do
+     not guess and do not silently switch to the web.
+   - Without that block, call search_documents when the user mentions "the
+     document", "the file", "the PDF", "uploaded", "attached", "my notes /
+     report / resume", or asks about specific people, names, figures, dates or
+     policies that could be inside their files. Use a short, self-contained
+     query; if the first result is weak, try ONE more wording.
    - Call list_uploaded_documents when asked which files are uploaded.
-   - Do NOT search documents for unrelated general, coding or news questions.
+   - If a document tool returns an error, say document search is unavailable.
+   - Do NOT search documents for clearly unrelated general, coding or news
+     questions.
 
 3. web_search - ONLY for current or live information: latest versions, recent
    news, today's events, sports results, weather, prices, recent technology or
