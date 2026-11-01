@@ -1,8 +1,13 @@
 import os
+import json
 import time
+import uuid
+import threading
 from datetime import datetime
+from typing import List, Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -130,6 +135,172 @@ def build_model(name: str):
         max_retries=2,   # short retry on 503 / 429 before giving up
         timeout=60,      # never hang forever on a stuck request
     )
+
+
+# ============================================================
+# CHAT HISTORY + FEEDBACK HELPERS
+#   Used by the Streamlit app (app.py) for the message actions:
+#     - Edit message / Try again / See versions / Branch in new chat
+#         -> the visible chat is replayed into a fresh agent thread
+#            with build_history_messages()
+#     - Rate response (thumbs up / down)
+#         -> saved with save_feedback()
+# ============================================================
+
+MAX_HISTORY_MESSAGES = 40
+MAX_HISTORY_CHARS = 4000
+
+
+def new_thread_id() -> str:
+    """A fresh, empty memory thread for the agent."""
+
+    return str(uuid.uuid4())
+
+
+def build_history_messages(
+    history,
+    max_messages: int = MAX_HISTORY_MESSAGES,
+    max_chars: int = MAX_HISTORY_CHARS,
+):
+    """Turn a chat shown on screen into clean model messages.
+
+    history: list of {"role": "user" | "assistant", "content": str}
+
+    - empty / unknown-role items are dropped
+    - the list always starts with a user message
+    - neighbouring messages from the same role are merged
+    - a trailing unanswered user message is dropped (the new question
+      is added separately by the caller)
+    - only the most recent `max_messages` are kept, long ones are cut
+    """
+
+    cleaned = []
+
+    for item in history or []:
+
+        if not isinstance(item, dict):
+            continue
+
+        role = item.get("role")
+        content = item.get("content")
+
+        if role not in ("user", "assistant") or not isinstance(content, str):
+            continue
+
+        content = content.strip()
+
+        if not content:
+            continue
+
+        if len(content) > max_chars:
+            content = content[:max_chars] + " ..."
+
+        if not cleaned and role != "user":
+            continue
+
+        if cleaned and cleaned[-1]["role"] == role:
+            cleaned[-1]["content"] += "\n\n" + content
+        else:
+            cleaned.append({"role": role, "content": content})
+
+    while cleaned and cleaned[-1]["role"] == "user":
+        cleaned.pop()
+
+    if max_messages and len(cleaned) > max_messages:
+        cleaned = cleaned[-max_messages:]
+
+        while cleaned and cleaned[0]["role"] != "user":
+            cleaned.pop(0)
+
+    return cleaned
+
+
+def _message_text(message) -> str:
+    """Visible text of a LangChain message (ignores thinking / tool blocks)."""
+
+    content = getattr(message, "content", message)
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+
+        parts = []
+
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif (
+                isinstance(block, dict)
+                and block.get("type") in (None, "text")
+                and isinstance(block.get("text"), str)
+            ):
+                parts.append(block["text"])
+
+        return "".join(parts)
+
+    return str(content)
+
+
+# ---- feedback (thumbs up / down) ----------------------------
+#   One JSON line per rating in feedback.jsonl (change the path with
+#   FEEDBACK_FILE in .env). Clicking the same thumb again stores a
+#   "cleared" record, so the latest line per message_id is the truth.
+
+FEEDBACK_FILE = os.getenv("FEEDBACK_FILE", "feedback.jsonl")
+
+_feedback_lock = threading.Lock()
+
+
+def save_feedback(
+    conversation_id: str,
+    message_id: str,
+    rating: Optional[str],
+    prompt: Optional[str] = None,
+    response: Optional[str] = None,
+    comment: Optional[str] = None,
+):
+    """Store a rating: rating is "up", "down" or None (rating removed)."""
+
+    if rating not in (None, "up", "down"):
+        raise ValueError('rating must be "up", "down" or null')
+
+    record = {
+        "timestamp": datetime.now().isoformat(),
+        "conversation_id": conversation_id,
+        "message_id": message_id,
+        "rating": rating,
+        "prompt": (prompt or "")[:2000],
+        "response": (response or "")[:4000],
+        "comment": comment,
+    }
+
+    with _feedback_lock:
+        with open(FEEDBACK_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    return record
+
+
+def list_feedback(limit: int = 100):
+    """Most recent feedback records (newest last)."""
+
+    if not os.path.exists(FEEDBACK_FILE):
+        return []
+
+    with _feedback_lock:
+        with open(FEEDBACK_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+    records = []
+
+    for line in lines[-max(1, limit):]:
+        try:
+            records.append(json.loads(line))
+        except Exception:
+            continue
+
+    return records
 
 
 # ============================================================
@@ -530,6 +701,91 @@ def documents_search(query: str, top_k: int = 5):
         return {"results": vector_store.search(query, top_k=top_k)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# FEEDBACK ENDPOINTS  (thumbs up / down on a reply)
+# ============================================================
+
+class FeedbackRequest(BaseModel):
+    conversation_id: str
+    message_id: str
+    rating: Optional[str] = None      # "up", "down" or null to clear
+    prompt: Optional[str] = None
+    response: Optional[str] = None
+    comment: Optional[str] = None
+
+
+@app.post("/feedback")
+def feedback_save(request: FeedbackRequest):
+
+    try:
+        return save_feedback(
+            conversation_id=request.conversation_id,
+            message_id=request.message_id,
+            rating=request.rating,
+            prompt=request.prompt,
+            response=request.response,
+            comment=request.comment,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not save feedback: {e}")
+
+
+@app.get("/feedback")
+def feedback_list(limit: int = 100):
+
+    return {"feedback": list_feedback(limit)}
+
+
+# ============================================================
+# CHAT ENDPOINT WITH HISTORY
+#   For: Edit message, Try again, See versions, Branch in new chat.
+#   Send the chat as it should look ("history") plus the new
+#   question; a fresh thread is used so old, replaced messages in
+#   the agent's memory can never leak into the answer.
+# ============================================================
+
+class ChatTurn(BaseModel):
+    role: str          # "user" or "assistant"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    query: str
+    thread_id: Optional[str] = None
+    history: List[ChatTurn] = []
+
+
+@app.post("/chat")
+def chat(request: ChatRequest):
+
+    history = build_history_messages(
+        [{"role": turn.role, "content": turn.content} for turn in request.history]
+    )
+
+    # a replayed history always goes into a brand-new thread
+    if history:
+        thread_id = new_thread_id()
+    else:
+        thread_id = request.thread_id or new_thread_id()
+
+    messages = history + [{"role": "user", "content": request.query}]
+
+    try:
+        result = agent.invoke(
+            {"messages": messages},
+            config={"configurable": {"thread_id": thread_id}},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Agent error: {e}")
+
+    return {
+        "reply": _message_text(result["messages"][-1]),
+        "thread_id": thread_id,
+    }
 
 
 # ============================================================
