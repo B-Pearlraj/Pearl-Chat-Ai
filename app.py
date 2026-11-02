@@ -3169,18 +3169,18 @@ with st.sidebar:
     # --------------------------------------------------------
      st.markdown(
         """
-    <div class="chatgpt-side-header">
-        <div class="chatgpt-logo">
-            <img src="Face-PTS.png" class="pearl-logo" />
+        <div class="chatgpt-side-header">
+            <div class="chatgpt-logo">
+                <img src="Face-PTS.png" class="pearl-logo" />
+            </div>
+            <div class="chatgpt-brand">
+                <div class="chatgpt-brand-title">Pearl</div>
+                <div class="chatgpt-brand-subtitle">AI Assistant</div>
+            </div>
         </div>
-        <div class="chatgpt-brand">
-            <div class="chatgpt-brand-title">Pearl</div>
-            <div class="chatgpt-brand-subtitle">AI Assistant</div>
-        </div>
-    </div>
         """,
         unsafe_allow_html=True,
-    )
+    ))
     # --------------------------------------------------------
     # NEW CHAT
     # --------------------------------------------------------
