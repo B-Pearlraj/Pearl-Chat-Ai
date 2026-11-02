@@ -3167,11 +3167,27 @@ with st.sidebar:
     # --------------------------------------------------------
     # SIDEBAR HEADER
     # --------------------------------------------------------
+    import base64
+
+    _logo_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "Face-PTS.png"
+    )
+    if os.path.exists(_logo_path):
+        with open(_logo_path, "rb") as _f:
+            _logo_b64 = base64.b64encode(_f.read()).decode()
+        _logo_html = (
+            f'<img src="data:image/png;base64,{_logo_b64}" alt="Pearl logo" '
+            'style="width:40px;height:40px;object-fit:contain;border-radius:8px;">'
+        )
+    else:
+        # fallback to the original orb if the image file is missing
+        _logo_html = '<div class="chatgpt-logo-orb"></div>'
+
     st.markdown(
-        """
+        f"""
         <div class="chatgpt-side-header">
             <div class="chatgpt-logo">
-                <img src="Face-PTS.png" class="pearl-logo" />
+                {_logo_html}
             </div>
             <div class="chatgpt-brand">
                 <div class="chatgpt-brand-title">Pearl</div>
