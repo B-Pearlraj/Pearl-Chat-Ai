@@ -3167,7 +3167,7 @@ with st.sidebar:
     # --------------------------------------------------------
     # SIDEBAR HEADER
     # --------------------------------------------------------
-     sst.markdown(
+    st.markdown(
         """
         <div class="chatgpt-side-header">
             <div class="chatgpt-logo">
