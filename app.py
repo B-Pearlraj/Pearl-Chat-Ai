@@ -3171,7 +3171,7 @@ with st.sidebar:
         """
         <div class="chatgpt-side-header">
             <div class="chatgpt-logo">
-                <div class="chatgpt-logo-orb"></div>
+                <img src="Face-PTS.png" class="pearl-logo" />
             </div>
             <div class="chatgpt-brand">
                 <div class="chatgpt-brand-title">Pearl</div>
