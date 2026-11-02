@@ -3168,7 +3168,7 @@ with st.sidebar:
     # SIDEBAR HEADER
     # --------------------------------------------------------
      st.markdown(
-    """
+        """
     <div class="chatgpt-side-header">
         <div class="chatgpt-logo">
             <img src="Face-PTS.png" class="pearl-logo" />
@@ -3178,46 +3178,9 @@ with st.sidebar:
             <div class="chatgpt-brand-subtitle">AI Assistant</div>
         </div>
     </div>
-
-    <style>
-        .chatgpt-side-header {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 10px 0;
-        }
-
-        .chatgpt-logo {
-            width: 45px;
-            height: 45px;
-            flex-shrink: 0;
-        }
-
-        .pearl-logo {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-            border-radius: 50%;
-        }
-
-        .chatgpt-brand-title {
-            font-size: 22px;
-            font-weight: 700;
-            line-height: 1.2;
-        }
-
-        .chatgpt-brand-subtitle {
-            font-size: 12px;
-            opacity: 0.7;
-        }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-   
-
-
-
+        """,
+        unsafe_allow_html=True,
+    )
     # --------------------------------------------------------
     # NEW CHAT
     # --------------------------------------------------------
