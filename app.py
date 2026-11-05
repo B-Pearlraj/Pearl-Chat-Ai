@@ -3170,7 +3170,7 @@ with st.sidebar:
     import base64
 
     _logo_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "Face-PTS.png"
+        os.path.dirname(os.path.abspath(__file__)), "Logo-Ai.png"
     )
     if os.path.exists(_logo_path):
         with open(_logo_path, "rb") as _f:
