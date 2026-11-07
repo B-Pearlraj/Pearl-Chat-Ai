@@ -36,6 +36,10 @@ MAX_FILE_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))
 MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.30"))  # cosine similarity, 0..1
 EMBED_BATCH = 50
 
+# One shared HTTP client: the connection to Google stays open between
+# questions, so each search skips a new TLS handshake.
+_http = httpx.Client(timeout=60)
+
 
 # ------------------------------------------------------------------
 # Embeddings
@@ -65,11 +69,10 @@ def _embed(texts: List[str], task_type: str) -> List[List[float]]:
         last_error = None
         for attempt in range(4):
             try:
-                resp = httpx.post(
+                resp = _http.post(
                     EMBED_URL,
                     json=payload,
                     headers={"x-goog-api-key": api_key},
-                    timeout=60,
                 )
                 if resp.status_code in (429, 500, 503):
                     last_error = f"HTTP {resp.status_code}"
