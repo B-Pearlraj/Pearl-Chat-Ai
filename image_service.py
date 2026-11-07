@@ -3,26 +3,30 @@ image_service.py
 ----------------
 Images for Pearl.
 
-    Gemini    -> understands things (analysis, planning edits, writing prompts)
-    Stability -> draws things (creates and edits pictures)
+    Gemini  -> understands images (analysis / "what is this?")
+    kie.ai  -> creates and edits images (Nano Banana Pro by default)
 
     detect_intent()   -> decide: "analyze" | "edit" | "generate" | "chat"
     prepare_image()   -> validate + shrink an uploaded image
     analyze_images()  -> image(s) + question -> text answer      (Gemini)
-    generate_image()  -> text prompt         -> new image        (Stability)
-    edit_image()      -> image + instruction -> edited image     (Stability)
+    generate_image()  -> text prompt         -> new image        (kie.ai)
+    edit_image()      -> image + instruction -> edited image     (kie.ai)
+
+How kie.ai works (all models share it):
+    1. upload the picture (edit only)      -> gets a temporary URL
+    2. POST /api/v1/jobs/createTask        -> gets a taskId
+    3. poll GET /api/v1/jobs/recordInfo    -> until state is success / fail
+    4. download resultUrls[0]
 
 Environment settings:
-    STABILITY_API_KEY       REQUIRED for create / edit  (platform.stability.ai)
-    STABILITY_MODEL         core (default, cheapest) | ultra | sd3.5-large |
-                            sd3.5-large-turbo | sd3.5-medium
-    STABILITY_EDIT_STRENGTH how strongly "restyle" edits follow the new prompt
-                            instead of the original photo, 0.0-1.0 (default 0.7)
-    IMAGE_PROMPT_ENHANCE    1 (default) = Gemini rewrites short prompts into rich
-                            ones before drawing; 0 = send the prompt as typed
-    VISION_MODEL            Gemini model for analysis (default: GEMINI_MODEL)
-    MAX_IMAGE_MB            largest accepted upload (default 8)
-    IMAGE_MAX_SIDE          uploads are shrunk to this many pixels (default 2048)
+    KIE_API_KEY          REQUIRED for create / edit   (kie.ai -> API Key page)
+    KIE_IMAGE_MODEL      nano-banana-pro (default, best quality) | nano-banana-2 |
+                         google/nano-banana-edit (cheap, edit only)
+    KIE_RESOLUTION       1K (default) | 2K | 4K    (nano-banana-pro / 2 only)
+    KIE_TIMEOUT_SECONDS  how long to wait for one picture (default 240)
+    VISION_MODEL         Gemini model for analysis (default: GEMINI_MODEL)
+    MAX_IMAGE_MB         largest accepted upload (default 8)
+    IMAGE_MAX_SIDE       uploads are shrunk to this many pixels (default 2048)
 """
 
 import base64
@@ -48,9 +52,9 @@ VISION_FALLBACKS = [
     if m.strip()
 ]
 
-STABILITY_MODEL = os.getenv("STABILITY_MODEL", "core").strip().lower()
-STABILITY_EDIT_STRENGTH = min(1.0, max(0.0, float(os.getenv("STABILITY_EDIT_STRENGTH", "0.7"))))
-PROMPT_ENHANCE = os.getenv("IMAGE_PROMPT_ENHANCE", "1").strip() != "0"
+KIE_MODEL = os.getenv("KIE_IMAGE_MODEL", "nano-banana-pro").strip()
+KIE_RESOLUTION = os.getenv("KIE_RESOLUTION", "1K").strip().upper()
+KIE_TIMEOUT = int(os.getenv("KIE_TIMEOUT_SECONDS", "240"))
 
 MAX_IMAGE_MB = int(os.getenv("MAX_IMAGE_MB", "8"))
 IMAGE_MAX_SIDE = int(os.getenv("IMAGE_MAX_SIDE", "2048"))
@@ -306,252 +310,193 @@ def analyze_images(prompt: str, images: List[Tuple[bytes, str]],
 
 
 # ------------------------------------------------------------------
-# 5. STABILITY AI  (creating and editing pictures)
+# 5. KIE.AI  (creating and editing pictures)
 # ------------------------------------------------------------------
 
-_STAB = "https://api.stability.ai/v2beta/stable-image"
-_ASPECTS = {"1:1", "16:9", "9:16", "3:2", "2:3", "4:5", "5:4", "21:9", "9:21"}
+_KIE_API = "https://api.kie.ai/api/v1"
+_KIE_UPLOAD = "https://kieai.redpandaai.co/api/file-base64-upload"
+_ASPECTS = {"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"}
 
 
-def _stability_error(resp) -> str:
-    try:
-        body = resp.json()
-        detail = "; ".join(body.get("errors") or []) or body.get("message") or ""
-    except Exception:
-        detail = (resp.text or "")[:200]
-
-    code = resp.status_code
-    if code == 401:
-        return "Stability AI rejected the API key. Check STABILITY_API_KEY in the environment settings."
-    if code == 402:
-        return ("Stability AI says this account has no credits left. "
-                "Add credits at platform.stability.ai/account/credits and try again.")
-    if code == 403:
-        return ("Stability AI's safety filter blocked this request. "
-                "Please change the prompt or the image and try again.")
-    if code == 413:
-        return "The image is too large for Stability AI. Try a smaller image."
-    if code == 429:
-        return "Stability AI is receiving too many requests. Wait a few seconds and try again."
-    return f"Stability AI could not complete the request (HTTP {code}). {detail}".strip()
-
-
-def _stability_post(path: str, fields: dict, image: Optional[Tuple[bytes, str]] = None,
-                    output_format: str = "png") -> Tuple[bytes, str]:
-    """POST to a Stability endpoint. Returns (image_bytes, mime)."""
-    key = os.getenv("STABILITY_API_KEY")
+def _kie_headers() -> dict:
+    key = os.getenv("KIE_API_KEY")
     if not key:
-        raise ImageError("STABILITY_API_KEY is missing from the environment settings.")
-
-    data = {k: v for k, v in fields.items() if v not in (None, "")}
-    data["output_format"] = output_format
-
-    if image:
-        ext = "jpg" if "jpeg" in image[1] else image[1].split("/")[-1]
-        files = {"image": (f"image.{ext}", image[0], image[1])}
-    else:
-        files = {"none": ""}      # Stability requires multipart even without a file
-
-    last = "no response"
-    for attempt in range(2):
-        try:
-            resp = requests.post(
-                f"{_STAB}/{path}",
-                headers={"authorization": f"Bearer {key}", "accept": "image/*"},
-                files=files,
-                data=data,
-                timeout=120,
-            )
-        except requests.RequestException as exc:
-            last = str(exc)
-            time.sleep(2)
-            continue
-
-        if resp.status_code == 200:
-            if resp.headers.get("finish-reason", "").upper() == "CONTENT_FILTERED":
-                raise ImageError(
-                    "Stability AI's safety filter blocked the result. "
-                    "Please change the prompt or the image and try again."
-                )
-            mime = (resp.headers.get("content-type") or "").split(";")[0].strip()
-            if not mime.startswith("image/"):
-                mime = f"image/{output_format}"
-            return resp.content, mime
-
-        if resp.status_code in (500, 503) and attempt == 0:
-            time.sleep(2)
-            continue
-        raise ImageError(_stability_error(resp))
-
-    raise ImageError(f"Stability AI could not be reached ({last}). Please try again.")
+        raise ImageError("KIE_API_KEY is missing from the environment settings.")
+    return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
 
-# ------------------------------------------------------------------
-# 6. GEMINI WRITES THE PROMPTS  (falls back to simple rules if Gemini fails)
-# ------------------------------------------------------------------
-
-def _json_from_gemini(system: str, parts: list) -> Optional[dict]:
-    try:
-        result = _generate_content(
-            [VISION_MODEL] + [m for m in VISION_FALLBACKS if m != VISION_MODEL],
-            [{"role": "user", "parts": parts}],
-            {"temperature": 0.3, "responseMimeType": "application/json"},
-            system_text=system,
-        )
-        text, _ = _parse(result)
-        text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
-        data = json.loads(text)
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
-
-
-ENHANCE_SYSTEM = (
-    "You write prompts for an AI image generator. Turn the user's request into one vivid, "
-    "specific English prompt (under 70 words): subject, setting, style, lighting, colours, "
-    "composition. Keep every detail the user asked for. If the user wants words on the image, "
-    "include them in double quotes and keep them short. Choose the best aspect ratio from "
-    "1:1, 16:9, 9:16, 3:2, 2:3, 4:5, 5:4, 21:9, 9:21 (posters/phone wallpapers tall, "
-    "banners/desktop wide, otherwise 1:1). Reply ONLY with JSON: "
-    '{"prompt": "...", "negative_prompt": "...", "aspect_ratio": "1:1"}'
-)
-
-PLAN_SYSTEM = (
-    "You plan an edit for an AI image editor. Look at the image and the user's instruction, "
-    "then reply ONLY with JSON: "
-    '{"operation": "remove_background" | "replace" | "restyle", '
-    '"search_prompt": "...", "prompt": "...", "negative_prompt": "..."}.\n'
-    "- remove_background: the user wants the background removed / a transparent cut-out.\n"
-    "- replace: the user wants ONE specific thing or region changed, removed or swapped "
-    "(background, sky, a car, clothes colour...). search_prompt = short phrase naming what "
-    "exists now ('the red car', 'the sky', 'the background'). prompt = what should be there "
-    "instead; for a removal, describe what naturally fills the space ('empty road').\n"
-    "- restyle: a change to the WHOLE picture (art style, cartoon, anime, festival or "
-    "greeting-card theme, mood, lighting, colours, adding decorations). prompt = a full, vivid "
-    "description (under 70 words) of the final image that keeps the same subject, face, pose, "
-    "clothing and composition, plus the requested changes. Put any requested text in double quotes.\n"
-    "Write prompts in English. negative_prompt = things to avoid (may be empty)."
-)
+def _kie_error(code, msg) -> str:
+    """kie.ai answers HTTP 200 even on failure; the real status is body['code']."""
+    msg = (msg or "").strip()
+    if code == 401:
+        return "kie.ai rejected the API key. Check KIE_API_KEY in the environment settings."
+    if code == 402:
+        return ("kie.ai says this account has no credits left. "
+                "Add credits at kie.ai (Billing) and try again.")
+    if code == 422:
+        return f"kie.ai could not accept this request. {msg}".strip()
+    if code == 429:
+        return "kie.ai is receiving too many requests. Wait a few seconds and try again."
+    if code == 455:
+        return "kie.ai is down for maintenance right now. Please try again later."
+    if code in (400, 501):
+        return ("kie.ai could not create this image. It may have been blocked by the "
+                f"safety filter, so try rewording the prompt. {msg}").strip()
+    return f"kie.ai returned an error ({code}). {msg}".strip()
 
 
-def _enhance_prompt(text: str) -> dict:
-    plan = _json_from_gemini(ENHANCE_SYSTEM, [{"text": text}]) if PROMPT_ENHANCE else None
-    prompt = (plan or {}).get("prompt") or text
-    aspect = (plan or {}).get("aspect_ratio")
-    return {
-        "prompt": prompt,
-        "negative_prompt": (plan or {}).get("negative_prompt") or "",
-        "aspect_ratio": aspect if aspect in _ASPECTS else "1:1",
+def _kie_upload(data: bytes, mime: str) -> str:
+    """Upload a picture and return a temporary public URL (valid for days)."""
+    ext = "jpg" if "jpeg" in mime else mime.split("/")[-1]
+    body = {
+        "base64Data": f"data:{mime};base64,{base64.b64encode(data).decode()}",
+        "uploadPath": "pearl/uploads",
+        "fileName": f"pearl-{int(time.time() * 1000)}.{ext}",
     }
+    try:
+        resp = requests.post(_KIE_UPLOAD, json=body, headers=_kie_headers(), timeout=90)
+        payload = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise ImageError(f"Could not upload the image to kie.ai ({exc}).")
+
+    code = payload.get("code", resp.status_code)
+    url = (payload.get("data") or {}).get("downloadUrl")
+    if code != 200 or not url:
+        raise ImageError(_kie_error(code, payload.get("msg")))
+    return url
 
 
-_BG_REMOVE_RE = re.compile(
-    r"(remove|delete|erase|cut out|take off|get rid of)\s+(the\s+)?(image\s+|photo\s+)?background"
-    r"|transparent background|background\s+(removal|remover)",
-    re.I,
-)
-_REPLACE_RE = re.compile(
-    r"(?:replace|swap|change|turn|convert)\s+(?:the\s+)?(.+?)\s+(?:with|to|into|by)\s+(.+)$", re.I
-)
-_REMOVE_RE = re.compile(r"(?:remove|erase|delete|get rid of)\s+(?:the\s+)?(.+)$", re.I)
-_PRONOUNS = {"it", "this", "that", "image", "picture", "photo", "everything", "him", "her", "them"}
+def _kie_input(prompt: str, aspect: str, image_urls: Optional[List[str]]) -> dict:
+    """Build the model-specific `input` object."""
+    if "edit" in KIE_MODEL.lower():
+        # google/nano-banana-edit style
+        inp = {"prompt": prompt, "image_urls": image_urls or [],
+               "output_format": "png", "aspect_ratio": aspect}
+    else:
+        # nano-banana-pro / nano-banana-2 style
+        inp = {
+            "prompt": prompt,
+            "image_input": image_urls or [],
+            "aspect_ratio": aspect,
+            "resolution": KIE_RESOLUTION if KIE_RESOLUTION in ("1K", "2K", "4K") else "1K",
+            "output_format": "png",
+        }
+    return inp
 
 
-def _plan_with_rules(instruction: str) -> dict:
-    """Simple fallback when Gemini cannot plan the edit."""
-    text = instruction.strip().rstrip(".!")
-    if _BG_REMOVE_RE.search(text):
-        return {"operation": "remove_background"}
+def _kie_run(prompt: str, aspect: str, image_urls: Optional[List[str]] = None
+             ) -> Tuple[bytes, str]:
+    """Create the task, wait for it, download the picture."""
+    headers = _kie_headers()
 
-    m = _REPLACE_RE.search(text)
-    if m and m.group(1).strip().lower() not in _PRONOUNS:
-        return {"operation": "replace", "search_prompt": m.group(1).strip(),
-                "prompt": m.group(2).strip()}
+    # 1) create the task
+    try:
+        resp = requests.post(
+            f"{_KIE_API}/jobs/createTask",
+            json={"model": KIE_MODEL, "input": _kie_input(prompt, aspect, image_urls)},
+            headers=headers,
+            timeout=60,
+        )
+        created = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise ImageError(f"kie.ai could not be reached ({exc}). Please try again.")
 
-    m = _REMOVE_RE.search(text)
-    if m and m.group(1).strip().lower() not in _PRONOUNS:
-        what = m.group(1).strip()
-        return {"operation": "replace", "search_prompt": what,
-                "prompt": f"the same scene without the {what}, natural seamless background"}
+    if created.get("code") != 200:
+        raise ImageError(_kie_error(created.get("code"), created.get("msg")))
+    task_id = (created.get("data") or {}).get("taskId")
+    if not task_id:
+        raise ImageError("kie.ai did not return a task id. Please try again.")
 
-    return {"operation": "restyle", "prompt": f"{text}, high quality, detailed"}
+    # 2) wait for the result (states: waiting, queuing, generating, success, fail)
+    deadline = time.time() + KIE_TIMEOUT
+    delay = 3.0
+    while time.time() < deadline:
+        time.sleep(delay)
+        delay = min(delay + 0.5, 6.0)
+        try:
+            info = requests.get(
+                f"{_KIE_API}/jobs/recordInfo",
+                params={"taskId": task_id},
+                headers=headers,
+                timeout=30,
+            ).json()
+        except (requests.RequestException, ValueError):
+            continue                      # a single failed poll is fine, try again
 
+        if info.get("code") != 200:
+            raise ImageError(_kie_error(info.get("code"), info.get("msg")))
 
-def _plan_edit(instruction: str, source: Tuple[bytes, str]) -> dict:
-    plan = _json_from_gemini(
-        PLAN_SYSTEM,
-        [{"text": f"User instruction: {instruction}"}, _image_part(*source)],
+        data = info.get("data") or {}
+        state = data.get("state")
+
+        if state == "fail":
+            raise ImageError(_kie_error(
+                501, data.get("failMsg") or "The model could not create this image."))
+
+        if state == "success":
+            try:
+                urls = json.loads(data.get("resultJson") or "{}").get("resultUrls") or []
+            except ValueError:
+                urls = []
+            if not urls:
+                raise ImageError("kie.ai finished but returned no image. Please try again.")
+            return _download(urls[0])
+
+    raise ImageError(
+        "kie.ai is taking longer than expected. Please try again in a minute "
+        "(you are not charged for a task that fails)."
     )
-    if plan and plan.get("operation") in ("remove_background", "replace", "restyle"):
-        if plan["operation"] == "replace" and not (plan.get("search_prompt") and plan.get("prompt")):
-            return _plan_with_rules(instruction)
-        return plan
-    return _plan_with_rules(instruction)
+
+
+def _download(url: str) -> Tuple[bytes, str]:
+    try:
+        r = requests.get(url, timeout=90)
+        r.raise_for_status()
+    except requests.RequestException as exc:
+        raise ImageError(f"The image was created but could not be downloaded ({exc}).")
+    mime = (r.headers.get("content-type") or "").split(";")[0].strip()
+    if not mime.startswith("image/"):
+        mime = "image/jpeg" if url.lower().split("?")[0].endswith((".jpg", ".jpeg")) else "image/png"
+    return r.content, mime
 
 
 # ------------------------------------------------------------------
-# 7. THE TWO STABILITY FEATURES
+# 6. THE TWO KIE.AI FEATURES
 # ------------------------------------------------------------------
+
+_WIDE = re.compile(r"\b(banner|desktop|wide|landscape|youtube|thumbnail|cover photo|panorama|cinematic|16:9)\b", re.I)
+_TALL = re.compile(r"\b(poster|wallpaper|story|stories|reel|portrait|phone|mobile|flyer|9:16|vertical)\b", re.I)
+
+
+def _pick_aspect(prompt: str) -> str:
+    if _WIDE.search(prompt):
+        return "16:9"
+    if _TALL.search(prompt):
+        return "9:16" if re.search(r"\b(wallpaper|story|stories|reel|phone|mobile|9:16)\b", prompt, re.I) else "3:4"
+    return "1:1"
+
 
 def generate_image(prompt: str) -> Tuple[str, List[Tuple[bytes, str]]]:
     """Text prompt -> (caption, [(image_bytes, mime)])."""
     text = (prompt or "").strip()
     if not text:
         raise ImageError("Please describe the image you want to create.")
-
-    plan = _enhance_prompt(text)
-    fields = {
-        "prompt": plan["prompt"],
-        "negative_prompt": plan["negative_prompt"],
-        "aspect_ratio": plan["aspect_ratio"],
-    }
-
-    if STABILITY_MODEL in ("core", "ultra"):
-        path = f"generate/{STABILITY_MODEL}"
-    else:                                   # sd3.5-large, sd3.5-large-turbo, sd3.5-medium ...
-        path = "generate/sd3"
-        fields["model"] = STABILITY_MODEL
-        fields["mode"] = "text-to-image"
-
-    data, mime = _stability_post(path, fields)
+    data, mime = _kie_run(text, _pick_aspect(text))
     return "", [(data, mime)]
 
 
 def edit_image(prompt: str, source: List[Tuple[bytes, str]]) -> Tuple[str, List[Tuple[bytes, str]]]:
-    """Image + instruction -> (caption, [(edited_image_bytes, mime)])."""
+    """Image(s) + instruction -> (caption, [(edited_image_bytes, mime)])."""
     if not source:
         raise ImageError("There is no image to edit. Please upload one.")
 
-    instruction = (prompt or "").strip() or "Improve this image and make it look professional"
-    image = source[0]                       # Stability edits one picture at a time
-    plan = _plan_edit(instruction, image)
-    op = plan["operation"]
-    negative = plan.get("negative_prompt") or ""
-
-    if op == "remove_background":
-        data, mime = _stability_post("edit/remove-background", {}, image=image)
-        return "Here is your image with the background removed.", [(data, mime)]
-
-    if op == "replace":
-        data, mime = _stability_post(
-            "edit/search-and-replace",
-            {
-                "prompt": plan["prompt"],
-                "search_prompt": plan["search_prompt"],
-                "negative_prompt": negative,
-            },
-            image=image,
-        )
-        return "", [(data, mime)]
-
-    # restyle: keeps the layout / pose of the original, repaints it to match the prompt
-    data, mime = _stability_post(
-        "control/structure",
-        {
-            "prompt": plan.get("prompt") or instruction,
-            "negative_prompt": negative,
-            "control_strength": STABILITY_EDIT_STRENGTH,
-        },
-        image=image,
+    instruction = (prompt or "").strip() or "Improve this image and make it look professional."
+    # Nano Banana follows plain instructions; this line keeps the person recognisable.
+    full_prompt = (
+        f"{instruction}\n\nKeep the same person, face, and overall composition "
+        f"unless the instruction above says to change them."
     )
+
+    urls = [_kie_upload(data, mime) for data, mime in source[:8]]
+    data, mime = _kie_run(full_prompt, "auto", urls)
     return "", [(data, mime)]
