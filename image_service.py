@@ -1,32 +1,40 @@
 """
 image_service.py
 ----------------
-Everything about images, talking to Gemini over plain HTTPS (httpx),
-exactly like vector_store.py does for embeddings.
+Images for Pearl.
+
+    Gemini    -> understands things (analysis, planning edits, writing prompts)
+    Stability -> draws things (creates and edits pictures)
 
     detect_intent()   -> decide: "analyze" | "edit" | "generate" | "chat"
     prepare_image()   -> validate + shrink an uploaded image
-    analyze_images()  -> image(s) + question  -> text answer   (vision)
-    edit_image()      -> image + instruction  -> new image     (image model)
-    generate_image()  -> text prompt          -> new image     (image model)
+    analyze_images()  -> image(s) + question -> text answer      (Gemini)
+    generate_image()  -> text prompt         -> new image        (Stability)
+    edit_image()      -> image + instruction -> edited image     (Stability)
 
-Optional .env / Render settings (all have defaults):
-    VISION_MODEL           model used to *understand* images (default: GEMINI_MODEL)
-    IMAGE_MODEL            model used to *create / edit* images
-                           (default: gemini-2.5-flash-image)
-    IMAGE_FALLBACK_MODELS  comma separated backup image models
-    MAX_IMAGE_MB           largest accepted upload (default 8)
-    IMAGE_MAX_SIDE         uploads are shrunk to this many pixels (default 2048)
+Environment settings:
+    STABILITY_API_KEY       REQUIRED for create / edit  (platform.stability.ai)
+    STABILITY_MODEL         core (default, cheapest) | ultra | sd3.5-large |
+                            sd3.5-large-turbo | sd3.5-medium
+    STABILITY_EDIT_STRENGTH how strongly "restyle" edits follow the new prompt
+                            instead of the original photo, 0.0-1.0 (default 0.7)
+    IMAGE_PROMPT_ENHANCE    1 (default) = Gemini rewrites short prompts into rich
+                            ones before drawing; 0 = send the prompt as typed
+    VISION_MODEL            Gemini model for analysis (default: GEMINI_MODEL)
+    MAX_IMAGE_MB            largest accepted upload (default 8)
+    IMAGE_MAX_SIDE          uploads are shrunk to this many pixels (default 2048)
 """
 
 import base64
 import io
+import json
 import os
 import re
 import time
 from typing import List, Optional, Tuple
 
 import httpx
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -40,10 +48,9 @@ VISION_FALLBACKS = [
     if m.strip()
 ]
 
-IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gemini-2.5-flash-image")
-IMAGE_FALLBACKS = [
-    m.strip() for m in os.getenv("IMAGE_FALLBACK_MODELS", "").split(",") if m.strip()
-]
+STABILITY_MODEL = os.getenv("STABILITY_MODEL", "core").strip().lower()
+STABILITY_EDIT_STRENGTH = min(1.0, max(0.0, float(os.getenv("STABILITY_EDIT_STRENGTH", "0.7"))))
+PROMPT_ENHANCE = os.getenv("IMAGE_PROMPT_ENHANCE", "1").strip() != "0"
 
 MAX_IMAGE_MB = int(os.getenv("MAX_IMAGE_MB", "8"))
 IMAGE_MAX_SIDE = int(os.getenv("IMAGE_MAX_SIDE", "2048"))
@@ -298,32 +305,253 @@ def analyze_images(prompt: str, images: List[Tuple[bytes, str]],
     return text
 
 
-def _run_image_model(parts: list) -> Tuple[str, List[Tuple[bytes, str]]]:
-    result = _generate_content(
-        [IMAGE_MODEL] + [m for m in IMAGE_FALLBACKS if m != IMAGE_MODEL],
-        [{"role": "user", "parts": parts}],
-        {"responseModalities": ["TEXT", "IMAGE"]},
-    )
-    text, images = _parse(result)
-    if not images:
-        # The model answered in words (usually a refusal or a question)
-        raise ImageError(
-            text or "The model did not return an image. Try describing it differently."
-        )
-    return text, images
+# ------------------------------------------------------------------
+# 5. STABILITY AI  (creating and editing pictures)
+# ------------------------------------------------------------------
 
+_STAB = "https://api.stability.ai/v2beta/stable-image"
+_ASPECTS = {"1:1", "16:9", "9:16", "3:2", "2:3", "4:5", "5:4", "21:9", "9:21"}
+
+
+def _stability_error(resp) -> str:
+    try:
+        body = resp.json()
+        detail = "; ".join(body.get("errors") or []) or body.get("message") or ""
+    except Exception:
+        detail = (resp.text or "")[:200]
+
+    code = resp.status_code
+    if code == 401:
+        return "Stability AI rejected the API key. Check STABILITY_API_KEY in the environment settings."
+    if code == 402:
+        return ("Stability AI says this account has no credits left. "
+                "Add credits at platform.stability.ai/account/credits and try again.")
+    if code == 403:
+        return ("Stability AI's safety filter blocked this request. "
+                "Please change the prompt or the image and try again.")
+    if code == 413:
+        return "The image is too large for Stability AI. Try a smaller image."
+    if code == 429:
+        return "Stability AI is receiving too many requests. Wait a few seconds and try again."
+    return f"Stability AI could not complete the request (HTTP {code}). {detail}".strip()
+
+
+def _stability_post(path: str, fields: dict, image: Optional[Tuple[bytes, str]] = None,
+                    output_format: str = "png") -> Tuple[bytes, str]:
+    """POST to a Stability endpoint. Returns (image_bytes, mime)."""
+    key = os.getenv("STABILITY_API_KEY")
+    if not key:
+        raise ImageError("STABILITY_API_KEY is missing from the environment settings.")
+
+    data = {k: v for k, v in fields.items() if v not in (None, "")}
+    data["output_format"] = output_format
+
+    if image:
+        ext = "jpg" if "jpeg" in image[1] else image[1].split("/")[-1]
+        files = {"image": (f"image.{ext}", image[0], image[1])}
+    else:
+        files = {"none": ""}      # Stability requires multipart even without a file
+
+    last = "no response"
+    for attempt in range(2):
+        try:
+            resp = requests.post(
+                f"{_STAB}/{path}",
+                headers={"authorization": f"Bearer {key}", "accept": "image/*"},
+                files=files,
+                data=data,
+                timeout=120,
+            )
+        except requests.RequestException as exc:
+            last = str(exc)
+            time.sleep(2)
+            continue
+
+        if resp.status_code == 200:
+            if resp.headers.get("finish-reason", "").upper() == "CONTENT_FILTERED":
+                raise ImageError(
+                    "Stability AI's safety filter blocked the result. "
+                    "Please change the prompt or the image and try again."
+                )
+            mime = (resp.headers.get("content-type") or "").split(";")[0].strip()
+            if not mime.startswith("image/"):
+                mime = f"image/{output_format}"
+            return resp.content, mime
+
+        if resp.status_code in (500, 503) and attempt == 0:
+            time.sleep(2)
+            continue
+        raise ImageError(_stability_error(resp))
+
+    raise ImageError(f"Stability AI could not be reached ({last}). Please try again.")
+
+
+# ------------------------------------------------------------------
+# 6. GEMINI WRITES THE PROMPTS  (falls back to simple rules if Gemini fails)
+# ------------------------------------------------------------------
+
+def _json_from_gemini(system: str, parts: list) -> Optional[dict]:
+    try:
+        result = _generate_content(
+            [VISION_MODEL] + [m for m in VISION_FALLBACKS if m != VISION_MODEL],
+            [{"role": "user", "parts": parts}],
+            {"temperature": 0.3, "responseMimeType": "application/json"},
+            system_text=system,
+        )
+        text, _ = _parse(result)
+        text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
+        data = json.loads(text)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+ENHANCE_SYSTEM = (
+    "You write prompts for an AI image generator. Turn the user's request into one vivid, "
+    "specific English prompt (under 70 words): subject, setting, style, lighting, colours, "
+    "composition. Keep every detail the user asked for. If the user wants words on the image, "
+    "include them in double quotes and keep them short. Choose the best aspect ratio from "
+    "1:1, 16:9, 9:16, 3:2, 2:3, 4:5, 5:4, 21:9, 9:21 (posters/phone wallpapers tall, "
+    "banners/desktop wide, otherwise 1:1). Reply ONLY with JSON: "
+    '{"prompt": "...", "negative_prompt": "...", "aspect_ratio": "1:1"}'
+)
+
+PLAN_SYSTEM = (
+    "You plan an edit for an AI image editor. Look at the image and the user's instruction, "
+    "then reply ONLY with JSON: "
+    '{"operation": "remove_background" | "replace" | "restyle", '
+    '"search_prompt": "...", "prompt": "...", "negative_prompt": "..."}.\n'
+    "- remove_background: the user wants the background removed / a transparent cut-out.\n"
+    "- replace: the user wants ONE specific thing or region changed, removed or swapped "
+    "(background, sky, a car, clothes colour...). search_prompt = short phrase naming what "
+    "exists now ('the red car', 'the sky', 'the background'). prompt = what should be there "
+    "instead; for a removal, describe what naturally fills the space ('empty road').\n"
+    "- restyle: a change to the WHOLE picture (art style, cartoon, anime, festival or "
+    "greeting-card theme, mood, lighting, colours, adding decorations). prompt = a full, vivid "
+    "description (under 70 words) of the final image that keeps the same subject, face, pose, "
+    "clothing and composition, plus the requested changes. Put any requested text in double quotes.\n"
+    "Write prompts in English. negative_prompt = things to avoid (may be empty)."
+)
+
+
+def _enhance_prompt(text: str) -> dict:
+    plan = _json_from_gemini(ENHANCE_SYSTEM, [{"text": text}]) if PROMPT_ENHANCE else None
+    prompt = (plan or {}).get("prompt") or text
+    aspect = (plan or {}).get("aspect_ratio")
+    return {
+        "prompt": prompt,
+        "negative_prompt": (plan or {}).get("negative_prompt") or "",
+        "aspect_ratio": aspect if aspect in _ASPECTS else "1:1",
+    }
+
+
+_BG_REMOVE_RE = re.compile(
+    r"(remove|delete|erase|cut out|take off|get rid of)\s+(the\s+)?(image\s+|photo\s+)?background"
+    r"|transparent background|background\s+(removal|remover)",
+    re.I,
+)
+_REPLACE_RE = re.compile(
+    r"(?:replace|swap|change|turn|convert)\s+(?:the\s+)?(.+?)\s+(?:with|to|into|by)\s+(.+)$", re.I
+)
+_REMOVE_RE = re.compile(r"(?:remove|erase|delete|get rid of)\s+(?:the\s+)?(.+)$", re.I)
+_PRONOUNS = {"it", "this", "that", "image", "picture", "photo", "everything", "him", "her", "them"}
+
+
+def _plan_with_rules(instruction: str) -> dict:
+    """Simple fallback when Gemini cannot plan the edit."""
+    text = instruction.strip().rstrip(".!")
+    if _BG_REMOVE_RE.search(text):
+        return {"operation": "remove_background"}
+
+    m = _REPLACE_RE.search(text)
+    if m and m.group(1).strip().lower() not in _PRONOUNS:
+        return {"operation": "replace", "search_prompt": m.group(1).strip(),
+                "prompt": m.group(2).strip()}
+
+    m = _REMOVE_RE.search(text)
+    if m and m.group(1).strip().lower() not in _PRONOUNS:
+        what = m.group(1).strip()
+        return {"operation": "replace", "search_prompt": what,
+                "prompt": f"the same scene without the {what}, natural seamless background"}
+
+    return {"operation": "restyle", "prompt": f"{text}, high quality, detailed"}
+
+
+def _plan_edit(instruction: str, source: Tuple[bytes, str]) -> dict:
+    plan = _json_from_gemini(
+        PLAN_SYSTEM,
+        [{"text": f"User instruction: {instruction}"}, _image_part(*source)],
+    )
+    if plan and plan.get("operation") in ("remove_background", "replace", "restyle"):
+        if plan["operation"] == "replace" and not (plan.get("search_prompt") and plan.get("prompt")):
+            return _plan_with_rules(instruction)
+        return plan
+    return _plan_with_rules(instruction)
+
+
+# ------------------------------------------------------------------
+# 7. THE TWO STABILITY FEATURES
+# ------------------------------------------------------------------
 
 def generate_image(prompt: str) -> Tuple[str, List[Tuple[bytes, str]]]:
     """Text prompt -> (caption, [(image_bytes, mime)])."""
-    if not (prompt or "").strip():
+    text = (prompt or "").strip()
+    if not text:
         raise ImageError("Please describe the image you want to create.")
-    return _run_image_model([{"text": prompt.strip()}])
+
+    plan = _enhance_prompt(text)
+    fields = {
+        "prompt": plan["prompt"],
+        "negative_prompt": plan["negative_prompt"],
+        "aspect_ratio": plan["aspect_ratio"],
+    }
+
+    if STABILITY_MODEL in ("core", "ultra"):
+        path = f"generate/{STABILITY_MODEL}"
+    else:                                   # sd3.5-large, sd3.5-large-turbo, sd3.5-medium ...
+        path = "generate/sd3"
+        fields["model"] = STABILITY_MODEL
+        fields["mode"] = "text-to-image"
+
+    data, mime = _stability_post(path, fields)
+    return "", [(data, mime)]
 
 
 def edit_image(prompt: str, source: List[Tuple[bytes, str]]) -> Tuple[str, List[Tuple[bytes, str]]]:
-    """Image(s) + instruction -> (caption, [(edited_image_bytes, mime)])."""
+    """Image + instruction -> (caption, [(edited_image_bytes, mime)])."""
     if not source:
         raise ImageError("There is no image to edit. Please upload one.")
-    instruction = (prompt or "").strip() or "Improve this image."
-    parts = [{"text": instruction}] + [_image_part(b, m) for b, m in source]
-    return _run_image_model(parts)
+
+    instruction = (prompt or "").strip() or "Improve this image and make it look professional"
+    image = source[0]                       # Stability edits one picture at a time
+    plan = _plan_edit(instruction, image)
+    op = plan["operation"]
+    negative = plan.get("negative_prompt") or ""
+
+    if op == "remove_background":
+        data, mime = _stability_post("edit/remove-background", {}, image=image)
+        return "Here is your image with the background removed.", [(data, mime)]
+
+    if op == "replace":
+        data, mime = _stability_post(
+            "edit/search-and-replace",
+            {
+                "prompt": plan["prompt"],
+                "search_prompt": plan["search_prompt"],
+                "negative_prompt": negative,
+            },
+            image=image,
+        )
+        return "", [(data, mime)]
+
+    # restyle: keeps the layout / pose of the original, repaints it to match the prompt
+    data, mime = _stability_post(
+        "control/structure",
+        {
+            "prompt": plan.get("prompt") or instruction,
+            "negative_prompt": negative,
+            "control_strength": STABILITY_EDIT_STRENGTH,
+        },
+        image=image,
+    )
+    return "", [(data, mime)]
