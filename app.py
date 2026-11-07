@@ -4146,9 +4146,10 @@ def generate_image_reply(conv, prompt, placeholder, intent, images, previous):
 
     try:
         if intent == "analyze":
+            looked_at = images or ([previous] if previous else [])
             text = image_service.analyze_images(
                 prompt,
-                [(i["data"], i["mime"]) for i in images],
+                [(i["data"], i["mime"]) for i in looked_at],
                 history_payload(conv["messages"][:-1]),
             )
             outputs = []
