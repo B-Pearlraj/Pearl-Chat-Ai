@@ -4092,7 +4092,7 @@ if submission:
         # Microphone: turn the recording into text and send it as the question
         voice_clip = getattr(submission, "audio", None)
         if voice_clip is not None:
-            heard = ""
+            heard, voice_failed = "", False
             try:
                 with chat_container:
                     with st.spinner("Listening\u2026"):
@@ -4101,12 +4101,22 @@ if submission:
                             getattr(voice_clip, "type", None) or "audio/wav",
                         )
             except Exception as exc:
-                st.toast(f"Could not read the recording: {exc}", icon="\U0001F3A4")
+                voice_failed = True
+                print(f"[voice] transcription failed: {exc}")
+                st.toast(
+                    "Sorry, I could not process the recording. Please try again, "
+                    "or type your message.",
+                    icon="\U0001F3A4",
+                )
 
             if heard:
                 prompt = f"{prompt} {heard}".strip()
-            elif not prompt and not attached_files:
-                st.toast("I could not hear anything in that recording. Please try again.", icon="\U0001F3A4")
+            elif not voice_failed and not prompt and not attached_files:
+                st.toast(
+                    "I could not hear anything in that recording. Please speak "
+                    "closer to the microphone and try again.",
+                    icon="\U0001F3A4",
+                )
 
 # ============================================================
 # GENERATING A REPLY  (shared by: new message, edit, try again,
