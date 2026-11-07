@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import time
 import uuid
@@ -21,8 +22,6 @@ try:
     from langchain.agents import create_agent
 except ImportError:  # very old langchain -> use the deep agent instead
     create_agent = None
-
-from deepagents import create_deep_agent
 
 import vector_store
 
@@ -126,15 +125,43 @@ tavily_client = TavilyClient(
 )
 
 
-def build_model(name: str):
-    """Gemini chat model with quick built-in retries and a hard timeout."""
+# ------------------------------------------------------------
+# SPEED SETTINGS (all optional, set in .env / Render environment)
+#
+#   GEMINI_THINKING_LEVEL  "low" (default) | "minimal" | "medium" | "high" | "off"
+#       Gemini 3 models "think" before they answer. Less thinking means the
+#       first word appears much sooner. Use "high" only if you need deeper
+#       reasoning and accept slower replies.
+#   GEMINI_MAX_RETRIES     retries on the same model before the fallback
+#                          model takes over (default 1)
+#   GEMINI_TIMEOUT         seconds before a stuck request is given up (60)
+# ------------------------------------------------------------
 
-    return ChatGoogleGenerativeAI(
+THINKING_LEVEL = os.getenv("GEMINI_THINKING_LEVEL", "low").strip().lower()
+GEMINI_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "1"))
+GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "60"))
+
+
+def _gemini_major_version(name: str) -> int:
+    match = re.search(r"gemini-(\d+)", name or "")
+    return int(match.group(1)) if match else 0
+
+
+def build_model(name: str):
+    """Gemini chat model: low thinking, short retries and a hard timeout."""
+
+    options = dict(
         model=name,
         google_api_key=GEMINI_API_KEY,
-        max_retries=2,   # short retry on 503 / 429 before giving up
-        timeout=60,      # never hang forever on a stuck request
+        max_retries=GEMINI_MAX_RETRIES,   # quick retry on 503 / 429, then fallback model
+        timeout=GEMINI_TIMEOUT,           # never hang forever on a stuck request
     )
+
+    # thinking_level exists for Gemini 3+ models only
+    if THINKING_LEVEL in ("minimal", "low", "medium", "high") and _gemini_major_version(name) >= 3:
+        options["thinking_level"] = THINKING_LEVEL
+
+    return ChatGoogleGenerativeAI(**options)
 
 
 # ============================================================
@@ -603,6 +630,10 @@ _middleware = (
 
 if AGENT_MODE == "deep" or create_agent is None:
 
+    # imported only here: the deepagents package is heavy, and the normal
+    # "fast" mode never uses it (faster start, less memory on Render)
+    from deepagents import create_deep_agent
+
     agent = create_deep_agent(
         model=build_model(PRIMARY_MODEL),
         tools=TOOLS,
@@ -620,6 +651,25 @@ else:
         system_prompt=SYSTEM_PROMPT,
         middleware=_middleware,
     )
+
+
+# ============================================================
+# WARM-UP
+#   Neon sleeps when idle. Waking it here, in the background, means the
+#   first document question does not pay for that delay.
+# ============================================================
+
+def _warm_up():
+    try:
+        import database
+
+        if database.is_configured():
+            database.ensure_schema()
+    except Exception as e:
+        print(f"[startup] warm-up skipped: {e}")
+
+
+threading.Thread(target=_warm_up, daemon=True).start()
 
 
 # ============================================================
