@@ -90,7 +90,7 @@ _EDIT_RE = re.compile(
     r"make (it|this|the|him|her|them)|turn (it|this)|convert|transform|"
     r"enhance|improve|sharpen|blur|brighten|darken|colou?ri[sz]e|"
     r"black and white|grayscale|cartoon|anime|sketch|restyle|stylize|"
-    r"background|crop|resize|retouch|fix|clean up|upscale|"
+    r"crop|resize|retouch|fix|clean up|upscale|"
     r"cut out|recolou?r|filter|apply)\b",
     re.I,
 )
@@ -113,6 +113,27 @@ _ANALYZE_RE = re.compile(
 )
 
 
+# A question or analysis request anywhere in the sentence
+# ("in this what is the background colour ?", "can you predict ...")
+_QUESTION_RE = re.compile(
+    r"\b(what|whats|what's|which|who|whose|where|when|why|how|predict|identify|"
+    r"describe|explain|tell me|detect|count|recogni[sz]e|classify|is there|are there|"
+    r"is it|does it|do you see|can you see)\b",
+    re.I,
+)
+
+# "this image", "the picture", "in it" -> the user means a picture from earlier in the chat
+_IMAGE_REF_RE = re.compile(
+    r"\b(this|that|the|above|previous|last|earlier)\s+(image|picture|photo|pic|wallpaper|"
+    r"logo|poster|illustration|drawing|painting|screenshot)\b|\bin (it|this)\b",
+    re.I,
+)
+
+
+def _is_question(text: str) -> bool:
+    return text.rstrip().endswith("?") or bool(_QUESTION_RE.search(text))
+
+
 def detect_intent(prompt: str, has_image: bool, has_previous_image: bool = False) -> str:
     """
     Returns "analyze", "edit", "generate" or "chat".
@@ -125,11 +146,15 @@ def detect_intent(prompt: str, has_image: bool, has_previous_image: bool = False
     if has_image:
         if not text:
             return "analyze"                       # picture only -> describe it
-        if _ANALYZE_RE.search(text) and not _EDIT_RE.search(text):
-            return "analyze"
-        if _EDIT_RE.search(text):
-            # "what is in this image and remove the car"? treat as edit
-            return "edit" if not _ANALYZE_RE.search(text) else "analyze"
+
+        wants_edit = bool(_EDIT_RE.search(text))
+        starts_as_question = bool(_ANALYZE_RE.search(text))
+
+        if wants_edit:
+            # "what is in this image and remove the car"? treat as a question
+            return "analyze" if starts_as_question else "edit"
+        if starts_as_question or _is_question(text):
+            return "analyze"                       # "in this what is the background colour ?"
         if _GENERATE_RE.search(text):
             return "edit"                          # "make an image like this" -> use it as reference
         return "analyze"
@@ -137,6 +162,9 @@ def detect_intent(prompt: str, has_image: bool, has_previous_image: bool = False
     # no new upload
     if has_previous_image and _EDIT_FOLLOWUP_RE.search(text):
         return "edit"
+    if has_previous_image and _IMAGE_REF_RE.search(text) and _is_question(text) \
+            and not _GENERATE_RE.search(text):
+        return "analyze"                           # question about the earlier picture
     if _GENERATE_RE.search(text):
         return "generate"
     return "chat"
