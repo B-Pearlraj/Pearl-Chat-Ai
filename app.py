@@ -1995,6 +1995,11 @@ div[data-testid="stChatInput"] button[data-testid="stChatInputApproveButton"]{
    READ ALOUD PLAYER (server voice for non-English replies)
    ============================================================ */
 
+/* helper button pressed by the speaker icon (never shown) */
+[class*="st-key-speak_"]{
+  display:none !important;
+}
+
 [class*="st-key-ttsplayer_"]{
   padding-left:40px;
   margin-top:6px;
@@ -2625,6 +2630,11 @@ __BUTTONS__
   }
 
   // ---------------- Read aloud ----------------
+  //   1. The text is read straight away by a voice on this device when one
+  //      exists for its language (instant, nothing is generated).
+  //   2. Only when the device has no voice for that language (typical for
+  //      Tamil on Windows / Chrome) the server voice is used: the hidden
+  //      Streamlit button named in CFG.server_key is pressed.
   const speakBtn = byId('speak');
   if (speakBtn) {
     let W = window;
@@ -2651,7 +2661,7 @@ __BUTTONS__
     };
 
     const chunksOf = function (text) {
-      const parts = text.match(/[^.!?\n]+[.!?]*\s*/g) || [text];
+      const parts = text.match(/[^.!?\n\u0964\u0965\u3002]+[.!?\u0964\u0965\u3002]*\s*/g) || [text];
       const out = [];
       let cur = '';
       parts.forEach(function (p) {
@@ -2662,25 +2672,95 @@ __BUTTONS__
       return out;
     };
 
-    if (!synth) {
+    // language of the text, taken from its script ('' for Latin letters)
+    const SCRIPTS = [
+      ['ta-IN', /[\u0B80-\u0BFF]/g], ['hi-IN', /[\u0900-\u097F]/g],
+      ['te-IN', /[\u0C00-\u0C7F]/g], ['kn-IN', /[\u0C80-\u0CFF]/g],
+      ['ml-IN', /[\u0D00-\u0D7F]/g], ['bn-IN', /[\u0980-\u09FF]/g],
+      ['gu-IN', /[\u0A80-\u0AFF]/g], ['pa-IN', /[\u0A00-\u0A7F]/g],
+      ['ar-SA', /[\u0600-\u06FF]/g], ['he-IL', /[\u0590-\u05FF]/g],
+      ['ru-RU', /[\u0400-\u04FF]/g], ['el-GR', /[\u0370-\u03FF]/g],
+      ['th-TH', /[\u0E00-\u0E7F]/g], ['ja-JP', /[\u3040-\u30FF]/g],
+      ['ko-KR', /[\uAC00-\uD7AF]/g], ['zh-CN', /[\u4E00-\u9FFF]/g]
+    ];
+
+    const detectLang = function (text) {
+      const letters = (text.match(/\p{L}/gu) || []).length;
+      let best = '', bestCount = 0;
+      SCRIPTS.forEach(function (s) {
+        const n = (text.match(s[1]) || []).length;
+        if (n > bestCount) { best = s[0]; bestCount = n; }
+      });
+      return letters && bestCount / letters > 0.08 ? best : '';
+    };
+
+    // Chrome fills the voice list a moment after the page loads
+    const loadVoices = function () {
+      return new Promise(function (resolve) {
+        if (!synth) { resolve([]); return; }
+        const now = synth.getVoices();
+        if (now && now.length) { resolve(now); return; }
+        let finished = false;
+        const done = function () {
+          if (finished) return;
+          finished = true;
+          resolve(synth.getVoices() || []);
+        };
+        try { synth.addEventListener('voiceschanged', done, { once: true }); } catch (e) { /* ignore */ }
+        setTimeout(done, 1200);
+      });
+    };
+
+    const findVoice = function (voices, lang) {
+      const norm = function (v) { return (v.lang || '').replace('_', '-').toLowerCase(); };
+      const want = lang.toLowerCase(), base = want.split('-')[0];
+      return voices.find(function (v) { return norm(v) === want; })
+          || voices.find(function (v) { return norm(v).split('-')[0] === base; })
+          || null;
+    };
+
+    // press the hidden Streamlit button: the server creates the voice
+    const callServerVoice = function () {
+      if (!CFG.server_key) return false;
+      try {
+        const doc = window.parent.document;
+        const btn = doc.querySelector('[class*="st-key-' + CFG.server_key + '"] button');
+        if (btn) { btn.click(); return true; }
+      } catch (e) { /* not reachable */ }
+      return false;
+    };
+
+    if (!synth && !CFG.server_key) {
       speakBtn.disabled = true;
       speakBtn.title = 'Read aloud is not supported in this browser';
     } else {
       if (isActive()) paint(true);
 
-      speakBtn.onclick = function () {
+      speakBtn.onclick = async function () {
         if (isActive()) {
           W.__pearlSpeakId = null;
           synth.cancel();
           paint(false);
           return;
         }
-        synth.cancel();
+        if (synth) synth.cancel();
+
+        const lang = detectLang(CFG.speech);
+        let voice = null;
+
+        if (synth && lang) voice = findVoice(await loadVoices(), lang);
+
+        // a non-English message and no matching voice on this device
+        if (CFG.server_key && (!lang || !voice)) {
+          if (callServerVoice()) return;
+        }
+        if (!synth) return;
+
         W.__pearlSpeakId = CFG.id;
-        const lang = /[\u0B80-\u0BFF]/.test(CFG.speech) ? 'ta-IN' : '';
         chunksOf(CFG.speech).forEach(function (chunk) {
           const u = new W.SpeechSynthesisUtterance(chunk);
-          if (lang) u.lang = lang;
+          if (voice) { u.voice = voice; u.lang = voice.lang; }
+          else if (lang) { u.lang = lang; }
           synth.speak(u);
         });
         paint(true);
@@ -2688,10 +2768,12 @@ __BUTTONS__
 
       // keeps the icon right when speech ends by itself or another
       // message starts talking
-      setInterval(function () {
-        const active = isActive();
-        if (active !== showing) paint(active);
-      }, 400);
+      if (synth) {
+        setInterval(function () {
+          const active = isActive();
+          if (active !== showing) paint(active);
+        }, 400);
+      }
     }
   }
 })();
@@ -2713,7 +2795,7 @@ def strip_markdown_for_speech(text):
     return t.strip()
 
 
-def action_iframe(uid, text, buttons, labels):
+def action_iframe(uid, text, buttons, labels, server_key=None):
     """A small strip of browser-side buttons: copy / speak / share."""
     button_html = "".join(
         f'<button id="{name}" type="button" '
@@ -2728,6 +2810,7 @@ def action_iframe(uid, text, buttons, labels):
         "text": text,
         "speech": strip_markdown_for_speech(text) if "speak" in buttons else "",
         "labels": labels,
+        "server_key": server_key,
     }
     cfg_json = (
         json.dumps(cfg, ensure_ascii=False)
@@ -3101,8 +3184,7 @@ def render_assistant_actions(conv_id, conv, idx, msg, is_last):
     if len(variants) > 1:
         slots += ["prev", "count", "next"]
     use_server_voice = tts_service.prefers_server_voice(msg["content"])
-    slots += ["copy", "up", "down"]
-    slots += ["speak", "share"] if use_server_voice else ["audio"]
+    slots += ["copy", "up", "down", "audio"]
     if can_retry:
         slots.append("retry")
     slots.append("more")
@@ -3162,20 +3244,17 @@ def render_assistant_actions(conv_id, conv, idx, msg, is_last):
                         msg["content"],
                         ["speak", "share"],
                         {"speak": "Read aloud", "share": "Share"},
+                        server_key=f"speak_{uid}" if use_server_voice else None,
                     )
 
-                elif slot == "speak":
-                    # non-English reply: the voice comes from the server
-                    if icon_button(
-                        f"speak_{uid}", ":material/volume_up:", "Read aloud",
-                        fallback="\U0001F50A",
-                    ):
-                        st.session_state.tts_play = {"uid": uid, "autoplay": True}
-
-                elif slot == "share":
-                    action_iframe(
-                        f"{uid}_a", msg["content"], ["share"], {"share": "Share"}
-                    )
+                    if use_server_voice:
+                        # Hidden. The speaker icon above presses it only when
+                        # this device has no voice for the reply's language.
+                        if icon_button(
+                            f"speak_{uid}", ":material/volume_up:", "Read aloud",
+                            fallback="\U0001F50A",
+                        ):
+                            st.session_state.tts_play = {"uid": uid, "autoplay": True}
 
                 elif slot == "retry":
                     if icon_button(
