@@ -80,6 +80,24 @@ CREATE INDEX IF NOT EXISTS idx_chunks_document_id
 
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw
     ON document_chunks USING hnsw (embedding vector_cosine_ops);
+
+-- Images: uploads, AI-generated and AI-edited pictures
+CREATE TABLE IF NOT EXISTS images (
+    id          BIGSERIAL PRIMARY KEY,
+    session_id  TEXT        NOT NULL,
+    kind        TEXT        NOT NULL CHECK (kind IN ('upload', 'generated', 'edited')),
+    filename    TEXT,
+    mime_type   TEXT        NOT NULL,
+    file_size   BIGINT,
+    file_hash   TEXT,
+    file_data   BYTEA       NOT NULL,
+    prompt      TEXT,
+    parent_id   BIGINT REFERENCES images(id) ON DELETE SET NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_images_session
+    ON images (session_id, created_at DESC);
 """
 
 

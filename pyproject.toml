@@ -23,6 +23,7 @@ dependencies = [
     "numpy>=2.5.1",
     "orjson>=3.11.9",
     "pandas>=3.0.5",
+    "pillow>=10.0.0",
     "psycopg2-binary>=2.9.12",
     "pydantic>=2.13.4",
     "pymysql>=1.2.0",

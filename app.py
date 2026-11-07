@@ -19,6 +19,8 @@ from main import (
     save_feedback,
 )
 import vector_store
+import image_service
+import image_store
 
 # ============================================================
 # RECURSIVE TEXT EXTRACTION  (unchanged backend logic)
@@ -2617,23 +2619,35 @@ def make_title(text):
 # Building / changing messages
 # ------------------------------------------------------------
 
-def make_user_message(content, files=None):
+def make_user_message(content, files=None, images=None):
     return {
         "id": str(uuid.uuid4()),
         "role": "user",
         "content": content,
         "files": files or [],
+        "images": list(images or []),   # [{"id", "mime", "data", "kind"}]
         "time": datetime.now(),
     }
 
 
-def make_assistant_message(content, variants=None, ratings=None, msg_id=None):
+def make_assistant_message(content, variants=None, ratings=None, msg_id=None,
+                           images=None, variant_images=None):
     variants = list(variants) if variants else [content]
+    images = list(images or [])
+
+    # one image list per version of the reply ("Try again" keeps older ones)
+    older = list(variant_images or [])
+    while len(older) < len(variants) - 1:
+        older.append([])
+    older = older[: len(variants) - 1]
+
     return {
         "id": msg_id or str(uuid.uuid4()),
         "role": "assistant",
         "content": content,
+        "images": images,
         "variants": variants,
+        "variant_images": older + [images],
         "variant_idx": len(variants) - 1,
         "ratings": dict(ratings or {}),
         "time": datetime.now(),
@@ -2644,9 +2658,13 @@ def history_payload(messages):
     """Visible chat -> clean list of {role, content} for the model."""
     return build_history_messages(
         [
-            {"role": m.get("role"), "content": m.get("content", "")}
+            {
+                "role": m.get("role"),
+                "content": (m.get("content") or "")
+                + (" [An image was attached]" if m.get("images") and m.get("role") == "user" else ""),
+            }
             for m in messages
-            if m.get("content")
+            if m.get("content") or m.get("images")
         ]
     )
 
@@ -2761,6 +2779,7 @@ def start_regenerate(conv):
         "id": last.get("id"),
         "variants": list(last.get("variants") or [last.get("content", "")]),
         "ratings": dict(last.get("ratings") or {}),
+        "variant_images": list(last.get("variant_images") or [last.get("images") or []]),
     }
     reset_thread(conv)
     conv["pending"] = True
@@ -2772,6 +2791,9 @@ def change_variant(conv, msg, delta):
     new_idx = max(0, min(len(variants) - 1, msg.get("variant_idx", 0) + delta))
     msg["variant_idx"] = new_idx
     msg["content"] = variants[new_idx]
+    vimgs = msg.get("variant_images")
+    if vimgs and new_idx < len(vimgs):
+        msg["images"] = vimgs[new_idx]
     reset_thread(conv)
 
 
@@ -2779,13 +2801,14 @@ def branch_conversation(conv, idx):
     """Copy the chat up to (and including) message idx into a NEW chat."""
     new_id = str(uuid.uuid4())
 
-    skip = {"versions", "version_idx", "variants", "variant_idx", "ratings", "id"}
+    skip = {"versions", "version_idx", "variants", "variant_images", "variant_idx", "ratings", "id"}
     copied = []
     for m in conv["messages"][: idx + 1]:
         c = {k: copy.deepcopy(v) for k, v in m.items() if k not in skip}
         c["id"] = str(uuid.uuid4())
         if c["role"] == "assistant":
             c["variants"] = [c["content"]]
+            c["variant_images"] = [c.get("images") or []]
             c["variant_idx"] = 0
             c["ratings"] = {}
         copied.append(c)
@@ -3004,6 +3027,21 @@ def render_edit_box(conv_id, conv, idx, msg):
         st.rerun()
 
 
+def render_message_images(conv_id, idx, msg):
+    """Pictures attached to (or created for) a message, with a download button."""
+    for n, img in enumerate(msg.get("images") or []):
+        st.image(img["data"], width=380)
+        if msg.get("role") == "assistant":
+            ext = {"image/png": "png", "image/webp": "webp"}.get(img.get("mime"), "jpg")
+            st.download_button(
+                "⬇  Download image",
+                data=img["data"],
+                file_name=f"pearl-image-{n + 1}.{ext}",
+                mime=img.get("mime") or "image/png",
+                key=f"dl_{conv_id[:8]}_{idx}_{msg['id'][:6]}_{n}",
+            )
+
+
 def render_history(conv_id, conv):
     """Every message with its own toolbar."""
     msgs = conv["messages"]
@@ -3027,6 +3065,7 @@ def render_history(conv_id, conv):
                 render_message_html(msg["role"], msg["content"], msg.get("files")),
                 unsafe_allow_html=True,
             )
+            render_message_images(conv_id, idx, msg)
 
             if busy:
                 continue  # no toolbar while a reply is being written
@@ -3084,6 +3123,67 @@ def format_size(num_bytes):
 
 
 ALLOWED_DOC_TYPES = ["pdf", "docx", "txt", "md", "csv"]
+ALLOWED_IMAGE_TYPES = image_service.IMAGE_EXTENSIONS      # png, jpg, jpeg, webp
+
+# Anonymous id for THIS visitor: images are saved and listed per visitor,
+# so nobody sees anyone else's pictures.
+if "visitor_id" not in st.session_state:
+    st.session_state.visitor_id = str(uuid.uuid4())
+
+if "gallery_cache" not in st.session_state:
+    st.session_state.gallery_cache = None
+
+if "gallery_view" not in st.session_state:
+    st.session_state.gallery_view = None
+
+
+def split_attachments(files):
+    """-> (document files, image files)"""
+    docs, imgs = [], []
+    for f in files or []:
+        ext = os.path.splitext(f.name or "")[1].lower().lstrip(".")
+        (imgs if ext in ALLOWED_IMAGE_TYPES else docs).append(f)
+    return docs, imgs
+
+
+def ingest_images(files):
+    """Validate, shrink and save uploaded pictures.
+
+    Returns (images, errors): images are dicts kept on the chat message,
+    errors are file-chip dicts shown to the user.
+    """
+    images, errors = [], []
+    sid = st.session_state.visitor_id
+
+    for f in files:
+        try:
+            with st.spinner(f"Reading {f.name}..."):
+                data, mime = image_service.prepare_image(f.getvalue(), f.name)
+                new_id = image_store.save_image(
+                    sid, "upload", data, mime, filename=f.name
+                )
+            images.append(
+                {"id": new_id, "mime": mime, "data": data, "kind": "upload", "name": f.name}
+            )
+        except image_service.ImageError as exc:
+            errors.append({"name": f.name, "state": "err", "note": str(exc)})
+        except Exception as exc:
+            errors.append(
+                {"name": f.name, "state": "err", "note": f"Image upload failed - {exc}"}
+            )
+
+    if images:
+        st.session_state.gallery_cache = None
+    return images, errors
+
+
+def load_gallery(force=False):
+    """This visitor's saved pictures (cached until a new one is saved)."""
+    if force or st.session_state.gallery_cache is None:
+        st.session_state.gallery_cache = image_store.list_images(
+            st.session_state.visitor_id, limit=20
+        )
+    return st.session_state.gallery_cache
 
 # Streamlit >= 1.43 can put a "+" attach button inside st.chat_input.
 # Older versions fall back to the sidebar uploader.
@@ -3537,6 +3637,54 @@ chat_container = st.container()   # filled further down (after the helpers)
 # ============================================================
 
 USE_STREAMING = True
+# ============================================================
+# SIDEBAR: MY IMAGES  (uploaded, generated and edited pictures)
+# ============================================================
+
+with st.sidebar:
+    _gallery = load_gallery()
+
+    if _gallery:
+        with st.expander(f"🖼  My images ({len(_gallery)})", expanded=False):
+            _icons = {"upload": "📤", "generated": "✨", "edited": "🎨"}
+
+            for _g in _gallery:
+                _label = (_g["prompt"] or _g["filename"] or "image").replace("\n", " ")[:26]
+                if st.button(
+                    f"{_icons.get(_g['kind'], '🖼')}  {_label}",
+                    key=f"gal_open_{_g['id']}",
+                    use_container_width=True,
+                ):
+                    st.session_state.gallery_view = _g["id"]
+                    st.rerun()
+
+            _view_id = st.session_state.gallery_view
+            if _view_id:
+                _item = image_store.get_image(_view_id, st.session_state.visitor_id)
+                if _item:
+                    st.image(_item["data"], width=240)
+                    _ext = {"image/png": "png", "image/webp": "webp"}.get(_item["mime"], "jpg")
+                    st.download_button(
+                        "⬇  Download",
+                        data=_item["data"],
+                        file_name=f"pearl-image-{_item['id']}.{_ext}",
+                        mime=_item["mime"],
+                        key=f"gal_dl_{_item['id']}",
+                        use_container_width=True,
+                    )
+                    if st.button(
+                        "🗑  Delete from my images",
+                        key=f"gal_del_{_item['id']}",
+                        use_container_width=True,
+                    ):
+                        image_store.delete_image(_item["id"], st.session_state.visitor_id)
+                        st.session_state.gallery_view = None
+                        st.session_state.gallery_cache = None
+                        st.rerun()
+                else:
+                    st.session_state.gallery_view = None
+
+
 MAX_ATTEMPTS = 4
 
 RETRYABLE_MARKERS = (
@@ -3722,7 +3870,7 @@ if CHAT_FILE_SUPPORT:
     submission = st.chat_input(
         "Ask anything...",
         accept_file="multiple",
-        file_type=ALLOWED_DOC_TYPES,
+        file_type=ALLOWED_DOC_TYPES + ALLOWED_IMAGE_TYPES,
         key="pearl_chat_input",
     )
 else:
@@ -3743,12 +3891,100 @@ if submission:
 # switching to a version that has no answer yet)
 # ============================================================
 
-def generate_reply(conv, prompt, placeholder):
-    """Run the agent and stream the answer into `placeholder`.
+def _last_image(conv):
+    """Most recent picture earlier in this chat (for "make it darker")."""
+    for m in reversed(conv["messages"][:-1]):
+        imgs = m.get("images") or []
+        if imgs:
+            return imgs[-1]
+    return None
 
-    Returns (text, is_error). The last message of `conv` must be the
-    user's message that is being answered.
+
+def image_error_text(exc):
+    text = str(exc)
+    if "429" in text or "RESOURCE_EXHAUSTED" in text.upper():
+        return (
+            text + " This usually means the image model's quota is used up, or "
+            "image generation is not enabled for this Gemini API key (some free "
+            "keys have no image quota). Check Google AI Studio > Billing/Quota."
+        )
+    return text
+
+
+def generate_image_reply(conv, prompt, placeholder, intent, images, previous):
+    """analyze / edit / generate. Returns (text, is_error, output_images)."""
+    status = {
+        "analyze": "Looking at your image&hellip;",
+        "edit": "Editing your image&hellip;",
+        "generate": "Creating your image&hellip;",
+    }[intent]
+    placeholder.markdown(render_thinking_html(status), unsafe_allow_html=True)
+
+    sid = st.session_state.visitor_id
+
+    try:
+        if intent == "analyze":
+            text = image_service.analyze_images(
+                prompt,
+                [(i["data"], i["mime"]) for i in images],
+                history_payload(conv["messages"][:-1]),
+            )
+            outputs = []
+        else:
+            sources = images or ([previous] if previous else [])
+
+            if intent == "edit":
+                caption, produced = image_service.edit_image(
+                    prompt, [(i["data"], i["mime"]) for i in sources]
+                )
+                kind = "edited"
+                fallback = "Here is your edited image."
+            else:
+                caption, produced = image_service.generate_image(prompt)
+                kind = "generated"
+                fallback = "Here is the image you asked for."
+
+            parent = next((s.get("id") for s in sources if s and s.get("id")), None)
+
+            outputs = []
+            for data, mime in produced:
+                new_id = image_store.save_image(
+                    sid, kind, data, mime, prompt=prompt, parent_id=parent
+                )
+                outputs.append({"id": new_id, "mime": mime, "data": data, "kind": kind})
+
+            st.session_state.gallery_cache = None
+            text = caption or fallback
+
+        # The agent's own memory does not contain this turn, so the next text
+        # question replays the visible chat into a fresh thread.
+        reset_thread(conv)
+        return text, False, outputs
+
+    except image_service.ImageError as exc:
+        return image_error_text(exc), True, []
+    except Exception as exc:
+        return friendly_error(exc), True, []
+
+
+def generate_reply(conv, prompt, placeholder, images=None):
+    """Answer the last user message into `placeholder`.
+
+    Decides what the user wants:
+      picture + question    -> analyze it
+      picture + instruction -> edit it
+      "create an image of"  -> generate it
+      anything else         -> the normal chat agent
+    Returns (text, is_error, output_images). The last message of `conv`
+    must be the user's message that is being answered.
     """
+    images = list(images or [])
+    previous = None if images else _last_image(conv)
+
+    intent = image_service.detect_intent(prompt, bool(images), previous is not None)
+    if intent != "chat":
+        return generate_image_reply(conv, prompt, placeholder, intent, images, previous)
+
     placeholder.markdown(render_thinking_html(), unsafe_allow_html=True)
 
     def paint_text(text):
@@ -3783,19 +4019,22 @@ def generate_reply(conv, prompt, placeholder):
             reply = "No response could be generated for this request."
 
         conv["seeded"] = True
-        return reply, False
+        return reply, False, []
 
     except Exception as exc:
         reset_thread(conv)  # the thread may be half-written: start clean next time
-        return friendly_error(exc), True
+        return friendly_error(exc), True, []
 
 
 def run_pending_generation(conv):
     """Answer the last user message (after an edit / try again / version switch)."""
     prompt = conv["messages"][-1].get("content", "")
+    user_images = conv["messages"][-1].get("images") or []
 
     placeholder = st.empty()
-    reply, is_error = generate_reply(conv, prompt, placeholder)
+    reply, is_error, out_images = generate_reply(
+        conv, prompt, placeholder, images=user_images
+    )
 
     placeholder.markdown(
         render_error_html(reply) if is_error else render_message_html("assistant", reply),
@@ -3811,10 +4050,12 @@ def run_pending_generation(conv):
                 variants=regen["variants"] + [reply],
                 ratings=regen["ratings"],
                 msg_id=regen.get("id"),
+                images=out_images,
+                variant_images=regen.get("variant_images"),
             )
         )
     else:
-        conv["messages"].append(make_assistant_message(reply))
+        conv["messages"].append(make_assistant_message(reply, images=out_images))
 
     conv["regen"] = None
     conv["pending"] = False
@@ -3888,16 +4129,24 @@ if prompt or attached_files:
             render_message_html("user", prompt, pending_chips), unsafe_allow_html=True
         )
 
-        file_results = ingest_files(attached_files) if attached_files else []
+        doc_files, img_files = split_attachments(attached_files)
 
-        active_conv["messages"].append(make_user_message(prompt, file_results))
+        file_results = ingest_files(doc_files) if doc_files else []
+        image_dicts, image_errors = ingest_images(img_files) if img_files else ([], [])
+        file_results = file_results + image_errors
+
+        active_conv["messages"].append(
+            make_user_message(prompt, file_results, images=image_dicts)
+        )
         user_placeholder.markdown(
             render_message_html("user", prompt, file_results), unsafe_allow_html=True
         )
+        for _img in image_dicts:
+            st.image(_img["data"], width=300)
 
         thinking_placeholder = st.empty()
 
-        if not prompt:
+        if not prompt and not image_dicts:
             # Files only, no question: confirm and wait for the next message
             added = [r["name"] for r in file_results if r["state"] == "ok"]
             if added:
@@ -3920,7 +4169,9 @@ if prompt or attached_files:
         else:
             # Runs the deep agent in-process (no FastAPI). Each chat keeps
             # its own thread_id so separate chats keep separate memory.
-            bot_reply, reply_failed = generate_reply(active_conv, prompt, thinking_placeholder)
+            bot_reply, reply_failed, out_images = generate_reply(
+                active_conv, prompt, thinking_placeholder, images=image_dicts
+            )
 
             thinking_placeholder.markdown(
                 render_error_html(bot_reply)
@@ -3928,7 +4179,9 @@ if prompt or attached_files:
                 else render_message_html("assistant", bot_reply),
                 unsafe_allow_html=True,
             )
-            active_conv["messages"].append(make_assistant_message(bot_reply))
+            active_conv["messages"].append(
+                make_assistant_message(bot_reply, images=out_images)
+            )
 
     # Redraw once so the sidebar chat title and the message toolbars update
     st.rerun()
