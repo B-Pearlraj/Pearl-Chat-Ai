@@ -22,6 +22,7 @@ import vector_store
 import image_service
 import image_store
 import voice_service
+import tts_service
 
 # ============================================================
 # RECURSIVE TEXT EXTRACTION  (unchanged backend logic)
@@ -1991,6 +1992,28 @@ div[data-testid="stChatInput"] button[data-testid="stChatInputApproveButton"]{
 }
 
 /* ============================================================
+   READ ALOUD PLAYER (server voice for non-English replies)
+   ============================================================ */
+
+[class*="st-key-ttsplayer_"]{
+  padding-left:40px;
+  margin-top:6px;
+  max-width:480px;
+}
+
+[class*="st-key-ttsplayer_"] audio{
+  width:100%;
+  height:40px;
+  border-radius:20px;
+  color-scheme:dark;
+}
+
+[class*="st-key-ttsplayer_"] [data-testid="stCaptionContainer"]{
+  color:#7C88A8;
+  font-size:12px;
+}
+
+/* ============================================================
    ATTACHED-FILE CHIPS (inside chat bubbles)
    ============================================================ */
 
@@ -2988,6 +3011,19 @@ def branch_conversation(conv, idx):
 
 
 # ------------------------------------------------------------
+# Read aloud with the server voice (any language)
+#   English replies keep using the browser voice (instant). Every other
+#   language is spoken by Gemini text-to-speech, because most devices have
+#   no Tamil / Telugu / Hindi ... voice installed.
+# ------------------------------------------------------------
+
+@st.cache_data(ttl=3600, max_entries=12, show_spinner=False)
+def cached_speech(text):
+    """(wav bytes, was_shortened); listening again costs nothing."""
+    return tts_service.synthesize(text)
+
+
+# ------------------------------------------------------------
 # Rendering the toolbars
 # ------------------------------------------------------------
 
@@ -3064,7 +3100,9 @@ def render_assistant_actions(conv_id, conv, idx, msg, is_last):
     slots = []
     if len(variants) > 1:
         slots += ["prev", "count", "next"]
-    slots += ["copy", "up", "down", "audio"]
+    use_server_voice = tts_service.prefers_server_voice(msg["content"])
+    slots += ["copy", "up", "down"]
+    slots += ["speak", "share"] if use_server_voice else ["audio"]
     if can_retry:
         slots.append("retry")
     slots.append("more")
@@ -3126,6 +3164,19 @@ def render_assistant_actions(conv_id, conv, idx, msg, is_last):
                         {"speak": "Read aloud", "share": "Share"},
                     )
 
+                elif slot == "speak":
+                    # non-English reply: the voice comes from the server
+                    if icon_button(
+                        f"speak_{uid}", ":material/volume_up:", "Read aloud",
+                        fallback="\U0001F50A",
+                    ):
+                        st.session_state.tts_play = {"uid": uid, "autoplay": True}
+
+                elif slot == "share":
+                    action_iframe(
+                        f"{uid}_a", msg["content"], ["share"], {"share": "Share"}
+                    )
+
                 elif slot == "retry":
                     if icon_button(
                         f"retry_{uid}", ":material/refresh:", "Try again...", fallback="↻"
@@ -3148,6 +3199,24 @@ def render_assistant_actions(conv_id, conv, idx, msg, is_last):
                         ):
                             branch_conversation(conv, idx)
                             st.rerun()
+
+    # voice player for the message whose speaker button was pressed
+    play = st.session_state.get("tts_play")
+    if use_server_voice and play and play.get("uid") == uid:
+        with st.container(key=f"ttsplayer_{uid}"):
+            try:
+                with st.spinner("Preparing the voice\u2026"):
+                    wav, shortened = cached_speech(strip_markdown_for_speech(msg["content"]))
+                st.audio(wav, format="audio/wav", autoplay=bool(play.get("autoplay")))
+                if shortened:
+                    st.caption("Reading the first part of this reply.")
+            except Exception as exc:
+                print(f"[tts] {exc}")
+                friendly = str(exc) if isinstance(exc, tts_service.TTSError) else (
+                    "The voice could not be created right now. Please try again."
+                )
+                st.caption(friendly)
+        play["autoplay"] = False       # later reruns must not start the audio again
 
 
 def render_edit_box(conv_id, conv, idx, msg):
