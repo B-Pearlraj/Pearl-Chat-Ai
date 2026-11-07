@@ -4020,10 +4020,21 @@ def run_agent(prompt, thread_id, on_text, on_status, allowed_docs=None, history=
 #   and it needs one model call instead of two (no separate tool step).
 # ============================================================
 
+_SMALL_TALK = {
+    "hi", "hii", "hello", "hey", "hai", "thanks", "thank you", "thank u", "ok", "okay",
+    "bye", "good morning", "good afternoon", "good evening", "good night",
+}
+
+
 def build_agent_prompt(prompt):
     docs = list(st.session_state.session_docs)
 
     if not docs:
+        return prompt
+
+    # A plain greeting never needs a document lookup (saves an embedding call
+    # and a database query before the answer can start).
+    if prompt.strip().lower().strip("!.?, ") in _SMALL_TALK:
         return prompt
 
     names = ", ".join(docs)
