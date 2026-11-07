@@ -21,6 +21,7 @@ from main import (
 import vector_store
 import image_service
 import image_store
+import voice_service
 
 # ============================================================
 # RECURSIVE TEXT EXTRACTION  (unchanged backend logic)
@@ -1840,6 +1841,156 @@ div[data-testid="stChatInputFileUploadButton"] button::before{
 }
 
 /* ============================================================
+   MICROPHONE BUTTON (inside the message box, next to send)
+   ============================================================ */
+
+div[data-testid="stChatInput"] button[data-testid="stChatInputMicButton"],
+div[data-testid="stChatInput"] button[data-testid="stChatInputCancelButton"]{
+  width:40px !important;
+  height:40px !important;
+  min-width:40px !important;
+  min-height:40px !important;
+  padding:0 !important;
+  margin-right:6px !important;
+  border:none !important;
+  border-radius:50% !important;
+  background:rgba(148,163,184,0.14) !important;
+  color:#E2E8F0 !important;
+  box-shadow:none !important;
+  display:flex !important;
+  align-items:center !important;
+  justify-content:center !important;
+  transition:background 0.15s ease, transform 0.15s ease !important;
+}
+
+div[data-testid="stChatInput"] button[data-testid="stChatInputMicButton"]:hover,
+div[data-testid="stChatInput"] button[data-testid="stChatInputCancelButton"]:hover{
+  background:rgba(99,102,241,0.30) !important;
+  transform:none !important;
+}
+
+div[data-testid="stChatInput"] button[data-testid="stChatInputMicButton"] svg,
+div[data-testid="stChatInput"] button[data-testid="stChatInputCancelButton"] svg{
+  width:20px !important;
+  height:20px !important;
+}
+
+/* "send recording" button looks like the normal send button */
+div[data-testid="stChatInput"] button[data-testid="stChatInputApproveButton"]{
+  width:40px !important;
+  height:40px !important;
+  min-width:40px !important;
+  min-height:40px !important;
+  margin-right:8px !important;
+  border:none !important;
+  border-radius:12px !important;
+  background:linear-gradient(135deg,#6366F1,#7C3AED) !important;
+  color:#FFFFFF !important;
+  box-shadow:0 5px 15px rgba(99,102,241,0.30) !important;
+}
+
+@media (max-width:768px){
+  div[data-testid="stChatInput"] button[data-testid="stChatInputMicButton"],
+  div[data-testid="stChatInput"] button[data-testid="stChatInputCancelButton"]{
+    width:36px !important;
+    height:36px !important;
+    min-width:36px !important;
+    min-height:36px !important;
+    margin-right:4px !important;
+  }
+}
+
+/* ============================================================
+   PICTURES IN THE CHAT  (ChatGPT style: picture on top,
+   caption underneath, round download button on the picture)
+   ============================================================ */
+
+[class*="st-key-imgcard_"]{
+  position:relative;
+  width:fit-content;
+  max-width:100%;
+  gap:0 !important;
+}
+
+/* assistant pictures line up with the reply bubbles (avatar column = 46px) */
+[class*="st-key-imgcard_asst_"]{
+  margin:14px 0 6px 46px;
+  max-width:calc(100% - 46px);
+}
+
+/* your own pictures sit on the right, under your avatar column */
+[class*="st-key-imgcard_user_"]{
+  margin:6px 46px 4px auto;
+  max-width:calc(100% - 46px);
+}
+
+[class*="st-key-imgcard_"] [data-testid="stImage"] img{
+  display:block;
+  border-radius:18px;
+  border:1px solid rgba(148,163,184,0.18);
+  box-shadow:0 10px 30px rgba(0,0,0,0.35);
+}
+
+/* the avatar sits to the left of the picture, level with its top edge */
+[class*="st-key-imgcard_asst_"] [data-testid="stElementContainer"]:has(.pearl-img-avatar){
+  position:static;
+  height:0;
+  margin:0;
+}
+
+.pearl-img-avatar{
+  position:absolute;
+  left:-46px;
+  top:2px;
+}
+
+/* round download button floating on the bottom-right of the picture */
+[class*="st-key-imgdl_"]{
+  position:absolute !important;
+  right:12px;
+  bottom:12px;
+  width:auto !important;
+}
+
+[class*="st-key-imgdl_"] button{
+  width:40px !important;
+  height:40px !important;
+  min-width:40px !important;
+  min-height:40px !important;
+  padding:0 !important;
+  border-radius:50% !important;
+  background:rgba(11,16,32,0.72) !important;
+  backdrop-filter:blur(8px);
+  -webkit-backdrop-filter:blur(8px);
+  border:1px solid rgba(255,255,255,0.20) !important;
+  color:#FFFFFF !important;
+  display:flex !important;
+  align-items:center !important;
+  justify-content:center !important;
+  box-shadow:0 4px 14px rgba(0,0,0,0.35) !important;
+}
+
+[class*="st-key-imgdl_"] button:hover{
+  background:rgba(99,102,241,0.88) !important;
+  border-color:rgba(255,255,255,0.35) !important;
+}
+
+/* icon only: hide the text label */
+[class*="st-key-imgdl_"] button [data-testid="stMarkdownContainer"]{
+  display:none !important;
+}
+
+/* caption bubble under a picture: no avatar, same column as the picture */
+.pearl-avatar-spacer{
+  width:34px;
+  flex-shrink:0;
+}
+
+[class*="st-key-msgwrap_"] .pearl-row.noavatar{
+  margin-top:6px;
+}
+
+/* ============================================================
    ATTACHED-FILE CHIPS (inside chat bubbles)
    ============================================================ */
 
@@ -2269,7 +2420,7 @@ def render_file_chips_html(files):
     return '<div class="pearl-files">' + "".join(chips) + "</div>"
 
 
-def render_message_html(role, content, files=None):
+def render_message_html(role, content, files=None, show_avatar=True):
 
     avatar_html = (
         '<div class="pearl-avatar assistant"></div>'
@@ -2277,6 +2428,12 @@ def render_message_html(role, content, files=None):
         else '<div class="pearl-avatar user">You</div>'
     )
     row_class = "assistant" if role == "assistant" else "user"
+
+    # Caption under a picture: keep the column, but the avatar is shown
+    # next to the picture instead.
+    if not show_avatar:
+        avatar_html = '<div class="pearl-avatar-spacer"></div>'
+        row_class += " noavatar"
     bubble_class = "assistant" if role == "assistant" else "user"
 
     # Assistant replies are rendered through the Markdown-lite
@@ -3027,19 +3184,52 @@ def render_edit_box(conv_id, conv, idx, msg):
         st.rerun()
 
 
+def _display_width(data, max_w=560, max_h=460):
+    """Pixel width that keeps a picture inside max_w x max_h (any aspect ratio)."""
+    try:
+        import io
+        from PIL import Image
+
+        w, h = Image.open(io.BytesIO(data)).size
+        return max(140, int(min(max_w, max_h * w / h, w)))
+    except Exception:
+        return 380
+
+
 def render_message_images(conv_id, idx, msg):
-    """Pictures attached to (or created for) a message, with a download button."""
+    """Pictures attached to (or created for) a message.
+
+    Assistant pictures: avatar + rounded picture + round download button on it.
+    Your pictures: rounded, on the right.
+    """
+    role = msg.get("role")
+    msg_tag = str(msg.get("id") or "x")[:6]
+
     for n, img in enumerate(msg.get("images") or []):
-        st.image(img["data"], width=380)
-        if msg.get("role") == "assistant":
+        tag = f"{conv_id[:8]}_{idx}_{msg_tag}_{n}"
+        width = _display_width(img["data"])
+
+        if role == "assistant":
             ext = {"image/png": "png", "image/webp": "webp"}.get(img.get("mime"), "jpg")
-            st.download_button(
-                "⬇  Download image",
-                data=img["data"],
-                file_name=f"pearl-image-{n + 1}.{ext}",
-                mime=img.get("mime") or "image/png",
-                key=f"dl_{conv_id[:8]}_{idx}_{msg['id'][:6]}_{n}",
-            )
+            with st.container(key=f"imgcard_asst_{tag}"):
+                if n == 0:
+                    st.markdown(
+                        '<div class="pearl-avatar assistant pearl-img-avatar"></div>',
+                        unsafe_allow_html=True,
+                    )
+                st.image(img["data"], width=width)
+                st.download_button(
+                    "Download image",
+                    data=img["data"],
+                    file_name=f"pearl-image-{n + 1}.{ext}",
+                    mime=img.get("mime") or "image/png",
+                    key=f"imgdl_{tag}",
+                    icon=":material/download:",
+                    help="Download image",
+                )
+        else:
+            with st.container(key=f"imgcard_user_{tag}"):
+                st.image(img["data"], width=width)
 
 
 def render_history(conv_id, conv):
@@ -3061,11 +3251,20 @@ def render_history(conv_id, conv):
                 render_edit_box(conv_id, conv, idx, msg)
                 continue
 
-            st.markdown(
-                render_message_html(msg["role"], msg["content"], msg.get("files")),
-                unsafe_allow_html=True,
-            )
-            render_message_images(conv_id, idx, msg)
+            if msg["role"] == "assistant" and msg.get("images"):
+                # ChatGPT order: the picture first, its caption underneath
+                render_message_images(conv_id, idx, msg)
+                if (msg.get("content") or "").strip():
+                    st.markdown(
+                        render_message_html("assistant", msg["content"], show_avatar=False),
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.markdown(
+                    render_message_html(msg["role"], msg["content"], msg.get("files")),
+                    unsafe_allow_html=True,
+                )
+                render_message_images(conv_id, idx, msg)
 
             if busy:
                 continue  # no toolbar while a reply is being written
@@ -3866,15 +4065,19 @@ def build_agent_prompt(prompt):
 # CHAT INPUT  (ChatGPT style: "+" button inside the message box)
 # ============================================================
 
+# Streamlit >= 1.47 can also put a microphone button inside st.chat_input.
+CHAT_AUDIO_SUPPORT = "accept_audio" in inspect.signature(st.chat_input).parameters
+
+_chat_input_options = {"key": "pearl_chat_input"}
 if CHAT_FILE_SUPPORT:
-    submission = st.chat_input(
-        "Ask anything...",
+    _chat_input_options.update(
         accept_file="multiple",
         file_type=ALLOWED_DOC_TYPES + ALLOWED_IMAGE_TYPES,
-        key="pearl_chat_input",
     )
-else:
-    submission = st.chat_input("Ask anything...")
+if CHAT_AUDIO_SUPPORT:
+    _chat_input_options["accept_audio"] = True
+
+submission = st.chat_input("Ask anything...", **_chat_input_options)
 
 prompt = ""
 attached_files = []
@@ -3885,6 +4088,25 @@ if submission:
     else:
         prompt = (getattr(submission, "text", "") or "").strip()
         attached_files = list(getattr(submission, "files", []) or [])
+
+        # Microphone: turn the recording into text and send it as the question
+        voice_clip = getattr(submission, "audio", None)
+        if voice_clip is not None:
+            heard = ""
+            try:
+                with chat_container:
+                    with st.spinner("Listening\u2026"):
+                        heard = voice_service.transcribe(
+                            voice_clip.getvalue(),
+                            getattr(voice_clip, "type", None) or "audio/wav",
+                        )
+            except Exception as exc:
+                st.toast(f"Could not read the recording: {exc}", icon="\U0001F3A4")
+
+            if heard:
+                prompt = f"{prompt} {heard}".strip()
+            elif not prompt and not attached_files:
+                st.toast("I could not hear anything in that recording. Please try again.", icon="\U0001F3A4")
 
 # ============================================================
 # GENERATING A REPLY  (shared by: new message, edit, try again,
