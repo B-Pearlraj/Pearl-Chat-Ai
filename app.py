@@ -3902,7 +3902,7 @@ def _last_image(conv):
 
 def image_error_text(exc):
     text = str(exc)
-    if "429" in text or "RESOURCE_EXHAUSTED" in text.upper():
+    if "Stability" not in text and ("429" in text or "RESOURCE_EXHAUSTED" in text.upper()):
         return (
             text + " This usually means the image model's quota is used up, or "
             "image generation is not enabled for this Gemini API key (some free "
