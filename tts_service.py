@@ -21,7 +21,8 @@ Environment settings (all optional):
                      (default: gemini-3.8-flash-lite-tts,gemini-3.8-flash-tts)
     TTS_VOICE        prebuilt voice name (default: Kore)
     TTS_MAX_CHARS    longest text read aloud in one go (default 2400)
-    TTS_CHUNK_CHARS  size of each piece sent to the model (default 800)
+    TTS_CHUNK_CHARS  size of each piece sent to the model (default 350);
+                     the pieces are created in parallel, so smaller = faster start
 """
 
 import base64
@@ -47,7 +48,7 @@ TTS_MODELS = [
 ]
 TTS_VOICE = os.getenv("TTS_VOICE", "Kore")
 TTS_MAX_CHARS = int(os.getenv("TTS_MAX_CHARS", "2400"))
-CHUNK_CHARS = int(os.getenv("TTS_CHUNK_CHARS", "800"))
+CHUNK_CHARS = int(os.getenv("TTS_CHUNK_CHARS", "350"))
 
 TTS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 DEFAULT_RATE = 24000          # Gemini TTS output: 24 kHz, mono, 16-bit
@@ -220,7 +221,7 @@ def synthesize(text: str) -> Tuple[bytes, bool]:
     if len(chunks) == 1:
         results = [_request_chunk(chunks[0], api_key)]
     else:
-        with ThreadPoolExecutor(max_workers=min(3, len(chunks))) as pool:
+        with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as pool:
             results = list(pool.map(lambda c: _request_chunk(c, api_key), chunks))
 
     rate = results[0][1]
