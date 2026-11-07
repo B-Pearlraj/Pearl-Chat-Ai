@@ -24,7 +24,7 @@ Environment settings:
                          google/nano-banana-edit (cheap, edit only)
     KIE_RESOLUTION       1K (default) | 2K | 4K    (nano-banana-pro / 2 only)
     KIE_TIMEOUT_SECONDS  how long to wait for one picture (default 240)
-    VISION_MODEL         Gemini model for analysis (default: GEMINI_MODEL)
+    VISION_MODEL         Gemini model for analysis (default: GEMINI_MODEL, then gemini-3.1-flash-lite)
     MAX_IMAGE_MB         largest accepted upload (default 8)
     IMAGE_MAX_SIDE       uploads are shrunk to this many pixels (default 2048)
 """
@@ -45,10 +45,14 @@ load_dotenv()
 
 IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp"]
 
-VISION_MODEL = os.getenv("VISION_MODEL") or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+# Same defaults as main.py, so the picture / voice features use the same
+# Gemini models as the chat.
+VISION_MODEL = os.getenv("VISION_MODEL") or os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 VISION_FALLBACKS = [
     m.strip()
-    for m in os.getenv("GEMINI_FALLBACK_MODELS", "").split(",")
+    for m in os.getenv(
+        "GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite,gemini-3.8-flash"
+    ).split(",")
     if m.strip()
 ]
 
@@ -234,40 +238,92 @@ def _image_part(data: bytes, mime: str) -> dict:
     return {"inline_data": {"mime_type": mime, "data": base64.b64encode(data).decode()}}
 
 
+_DISCOVERED: Optional[List[str]] = None
+
+
+def _discover_models() -> List[str]:
+    """Ask Google which Gemini models THIS key can call (cached once found)."""
+    global _DISCOVERED
+    if _DISCOVERED:
+        return _DISCOVERED
+    found: List[str] = []
+    try:
+        r = httpx.get(
+            _BASE,
+            params={"pageSize": 200},
+            headers={"x-goog-api-key": _api_key()},
+            timeout=15,
+        )
+        if r.status_code == 200:
+            for m in r.json().get("models", []) or []:
+                if "generateContent" not in (m.get("supportedGenerationMethods") or []):
+                    continue
+                name = (m.get("name") or "").replace("models/", "")
+                low = name.lower()
+                if "flash" in low and not any(
+                    bad in low for bad in ("image", "tts", "live", "embedding", "audio", "robotics")
+                ):
+                    found.append(name)
+    except Exception:
+        pass
+    found = sorted(set(found), reverse=True)[:4]      # newest versions first
+    if found:
+        _DISCOVERED = found
+    return found
+
+
 def _generate_content(models: List[str], contents: list, generation_config: dict,
                       system_text: Optional[str] = None) -> dict:
-    """POST to generateContent, trying each model in turn on 404/429/5xx."""
+    """
+    POST to generateContent, trying each model in turn on 404/429/5xx.
+    If every configured model fails (for example a retired model name),
+    the models this API key can really use are looked up and tried too.
+    """
     key = _api_key()
     last = "unknown error"
+    order = list(dict.fromkeys(models))
+    looked_up = False
 
-    for model in models:
-        body = {"contents": contents, "generationConfig": generation_config}
-        if system_text:
-            body["systemInstruction"] = {"parts": [{"text": system_text}]}
+    while True:
+        for model in order:
+            body = {"contents": contents, "generationConfig": generation_config}
+            if system_text:
+                body["systemInstruction"] = {"parts": [{"text": system_text}]}
 
-        for attempt in range(2):
-            try:
-                resp = httpx.post(
-                    f"{_BASE}/{model}:generateContent",
-                    json=body,
-                    headers={"x-goog-api-key": key},
-                    timeout=120,
-                )
-            except httpx.HTTPError as exc:
-                last = f"{model}: {exc}"
-                time.sleep(1.5 * (attempt + 1))
-                continue
+            for attempt in range(2):
+                try:
+                    resp = httpx.post(
+                        f"{_BASE}/{model}:generateContent",
+                        json=body,
+                        headers={"x-goog-api-key": key},
+                        timeout=120,
+                    )
+                except httpx.HTTPError as exc:
+                    last = f"{model}: {exc}"
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
 
-            if resp.status_code == 200:
-                return resp.json()
+                if resp.status_code == 200:
+                    return resp.json()
 
-            last = f"{model}: HTTP {resp.status_code} {resp.text[:300]}"
-            if resp.status_code in (500, 503):
-                time.sleep(1.5 * (attempt + 1))
-                continue
-            break  # 400/403/404/429 -> try the next model
+                last = f"{model}: HTTP {resp.status_code} {resp.text[:300]}"
+                if resp.status_code in (500, 503):
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                break  # 400/403/404/429 -> try the next model
 
-    raise ImageError(f"The image model could not complete the request ({last}).")
+        if looked_up:
+            break
+        looked_up = True
+        extra = [m for m in _discover_models() if m not in order]
+        if not extra:
+            break
+        order = extra
+
+    raise ImageError(
+        "The AI model could not complete the request. Check GEMINI_MODEL in your "
+        f"environment settings. (Last error: {last[:200]})"
+    )
 
 
 def _parse(result: dict) -> Tuple[str, List[Tuple[bytes, str]]]:
