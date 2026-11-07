@@ -9,7 +9,7 @@ Images for Pearl.
     detect_intent()   -> decide: "analyze" | "edit" | "generate" | "chat"
     prepare_image()   -> validate + shrink an uploaded image
     analyze_images()  -> image(s) + question -> text answer      (Gemini)
-    generate_image()  -> text prompt         -> new image        (kie.ai)
+    generate_image()  -> text prompt         -> new image + caption (kie.ai)
     edit_image()      -> image + instruction -> edited image     (kie.ai)
 
 How kie.ai works (all models share it):
@@ -465,15 +465,70 @@ def _download(url: str) -> Tuple[bytes, str]:
 # ------------------------------------------------------------------
 
 _WIDE = re.compile(r"\b(banner|desktop|wide|landscape|youtube|thumbnail|cover photo|panorama|cinematic|16:9)\b", re.I)
-_TALL = re.compile(r"\b(poster|wallpaper|story|stories|reel|portrait|phone|mobile|flyer|9:16|vertical)\b", re.I)
+_TALL = re.compile(r"\b(poster|story|stories|reel|portrait|phone|mobile|flyer|9:16|vertical)\b", re.I)
+# "wallpaper" is landscape (16:9, desktop) unless the user says it is for a phone
+_WALLPAPER = re.compile(r"\bwall\s?p[ae]?p?e?r\b", re.I)   # also catches "wallper"
+_PHONE = re.compile(r"\b(phone|mobile|iphone|android|story|stories|reel|vertical|9:16)\b", re.I)
 
 
 def _pick_aspect(prompt: str) -> str:
     if _WIDE.search(prompt):
         return "16:9"
-    if _TALL.search(prompt):
-        return "9:16" if re.search(r"\b(wallpaper|story|stories|reel|phone|mobile|9:16)\b", prompt, re.I) else "3:4"
+    if _WALLPAPER.search(prompt) and not _PHONE.search(prompt):
+        return "16:9"
+    if _TALL.search(prompt) or _WALLPAPER.search(prompt):
+        return "9:16" if _PHONE.search(prompt) else "3:4"
     return "1:1"
+
+
+# ------------------------------------------------------------------
+# Planner: tidy the request + write the caption shown under the picture
+# ------------------------------------------------------------------
+
+PLAN_SYSTEM = (
+    "You prepare requests for an image app. The user's message may contain spelling "
+    "mistakes. Reply with JSON only: {{\"image_prompt\": str, \"caption\": str}}.\n"
+    "image_prompt: a clear, detailed English prompt for the image model. Keep the "
+    "user's intent and do not add objects they did not ask for (style, lighting and "
+    "mood details are fine). If any words must appear INSIDE the picture, correct "
+    "their spelling and put the exact corrected text in double quotes.\n"
+    "caption: the text shown under the finished picture, in the user's language. "
+    "If you corrected the spelling of words that appear inside the picture, begin "
+    "with: The correct wording is **\"<corrected text>\"**. and then a blank line. "
+    "Then add ONE short sentence (under 30 words) that starts with the verb "
+    "{verb} and says what the picture shows and its style, e.g. "
+    "\"{verb} a natural, cinematic forest wallpaper with soft morning light and "
+    "rich greens.\" End with at most one emoji. No headings, no lists."
+)
+
+
+def plan_image(prompt: str, kind: str = "generate",
+               source: Optional[List[Tuple[bytes, str]]] = None) -> Tuple[str, str]:
+    """
+    -> (image_prompt, caption). Never raises: if the planner fails the
+    original prompt is used and a plain caption is returned.
+    """
+    text = (prompt or "").strip()
+    fallback_caption = "Here is your edited image." if kind == "edit" else "Here is the image you asked for."
+    try:
+        verb = "Edited" if kind == "edit" else "Created"
+        parts = [{"text": f"User request: {text}"}]
+        if source:
+            parts += [_image_part(b, m) for b, m in source[:1]]
+        result = _generate_content(
+            [VISION_MODEL] + [m for m in VISION_FALLBACKS if m != VISION_MODEL],
+            [{"role": "user", "parts": parts}],
+            {"temperature": 0.4, "responseMimeType": "application/json"},
+            system_text=PLAN_SYSTEM.format(verb=verb),
+        )
+        raw, _ = _parse(result)
+        raw = re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.M).strip()
+        data = json.loads(raw)
+        image_prompt = str(data.get("image_prompt") or "").strip() or text
+        caption = str(data.get("caption") or "").strip() or fallback_caption
+        return image_prompt, caption
+    except Exception:
+        return text, fallback_caption
 
 
 def generate_image(prompt: str) -> Tuple[str, List[Tuple[bytes, str]]]:
@@ -481,8 +536,9 @@ def generate_image(prompt: str) -> Tuple[str, List[Tuple[bytes, str]]]:
     text = (prompt or "").strip()
     if not text:
         raise ImageError("Please describe the image you want to create.")
-    data, mime = _kie_run(text, _pick_aspect(text))
-    return "", [(data, mime)]
+    image_prompt, caption = plan_image(text, "generate")
+    data, mime = _kie_run(image_prompt, _pick_aspect(text))
+    return caption, [(data, mime)]
 
 
 def edit_image(prompt: str, source: List[Tuple[bytes, str]]) -> Tuple[str, List[Tuple[bytes, str]]]:
@@ -491,6 +547,7 @@ def edit_image(prompt: str, source: List[Tuple[bytes, str]]) -> Tuple[str, List[
         raise ImageError("There is no image to edit. Please upload one.")
 
     instruction = (prompt or "").strip() or "Improve this image and make it look professional."
+    instruction, caption = plan_image(instruction, "edit", source)
     # Nano Banana follows plain instructions; this line keeps the person recognisable.
     full_prompt = (
         f"{instruction}\n\nKeep the same person, face, and overall composition "
@@ -499,4 +556,4 @@ def edit_image(prompt: str, source: List[Tuple[bytes, str]]) -> Tuple[str, List[
 
     urls = [_kie_upload(data, mime) for data, mime in source[:8]]
     data, mime = _kie_run(full_prompt, "auto", urls)
-    return "", [(data, mime)]
+    return caption, [(data, mime)]
